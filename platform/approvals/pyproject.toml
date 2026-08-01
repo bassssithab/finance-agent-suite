@@ -1,0 +1,9 @@
+[project]
+name = "approvals"
+version = "0.1.0"
+description = "Human-in-the-loop approval queues (preparer -> reviewer -> approver) for the finance-agent-suite platform chassis"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
