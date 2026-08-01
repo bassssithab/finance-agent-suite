@@ -1,0 +1,11 @@
+name: template-agent
+version: 0.0.1
+description: One-line description of what this agent automates
+autonomy: draft_only        # draft_only | approve_to_act | autonomous_low_risk
+connectors:
+  - erp: read
+  - documents: read
+approval_rules:
+  external_effects: always_require_human
+knowledge_corpora: []
+tasks: []
