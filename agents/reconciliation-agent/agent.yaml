@@ -1,0 +1,12 @@
+name: reconciliation-agent
+version: 0.1.0
+description: Matches bank and ledger transactions deterministically and routes exceptions for human review.
+autonomy: draft_only
+connectors:
+  - banking: read
+  - erp: read
+approval_rules:
+  external_effects: always_require_human
+knowledge_corpora: []
+tasks:
+  - reconcile_period

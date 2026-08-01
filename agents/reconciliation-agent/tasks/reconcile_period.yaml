@@ -1,0 +1,25 @@
+name: reconcile_period
+description: >
+  Fetch bank and ledger transactions for a period, match them deterministically
+  (exact match on amount+date+reference, then amount+date within a tolerance
+  window), and submit the reconciliation report for human approval.
+inputs:
+  - source_system
+  - bank_folder
+  - ledger_folder
+  - start_date       # optional
+  - end_date         # optional
+  - tolerance_days   # default 2
+  - preparer         # default "reconciliation-agent"
+outputs:
+  - reconciliation_report   # matched pairs + exceptions; see reconciliation_agent.models.ReconciliationReport
+  - approval_request_id
+autonomy: draft_only
+connectors:
+  - banking: read (via platform/connectors FileConnector)
+  - erp: read (via platform/connectors FileConnector)
+audit_events:
+  - transactions_retrieved
+  - matching_completed
+  - report_generated
+  - "approval_submitted:reconciliation_report"   # emitted by platform/approvals on submit
