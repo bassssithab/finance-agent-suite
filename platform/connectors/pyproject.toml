@@ -1,0 +1,9 @@
+[project]
+name = "connectors"
+version = "0.1.0"
+description = "Read-first connector interface + adapters for the finance-agent-suite platform chassis"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]

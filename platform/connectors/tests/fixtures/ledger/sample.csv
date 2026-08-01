@@ -1,0 +1,4 @@
+date,account,memo,debit,credit,reference
+2026-07-20,1000-Cash,Office supplies payment,0,150.00,LREF003
+2026-07-01,1000-Cash,Opening balance,1000.00,0,LREF001
+2026-07-20,6000-Expenses,Office supplies,150.00,0,LREF002

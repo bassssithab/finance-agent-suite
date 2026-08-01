@@ -1,0 +1,4 @@
+date,account,description,amount,balance,reference
+2026-08-01,chase-1234,Payroll deposit,2500.00,3457.50,REF003
+2026-07-01,chase-1234,Opening deposit,1000.00,1000.00,REF001
+2026-07-15,chase-1234,Grocery store,-42.50,957.50,REF002
