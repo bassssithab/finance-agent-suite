@@ -1,0 +1,5 @@
+date,account,description,amount,balance,reference
+2026-07-01,chase-1234,Opening deposit,1000.00,1000.00,REF001
+2026-07-15,chase-1234,Vendor payment,-250.00,750.00,REF002
+2026-07-20,chase-1234,Wire transfer,500.00,1250.00,
+2026-07-25,chase-1234,Unrecognized deposit,75.00,1325.00,REF999

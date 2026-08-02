@@ -60,6 +60,18 @@ finance-agent-suite/
 └── README.md
 ```
 
+## Demo
+
+`demo.py` runs the reconciliation-agent end to end against sample data in
+`sample_data/` and narrates each step to the terminal: transactions fetched,
+matches found (exact vs. tolerance), exceptions flagged with reasons, the
+report submitted for approval, a reviewer and approver signing off, and the
+audit log's hash-chain verification. Stdlib only, no LLM calls, no setup:
+
+```bash
+python demo.py
+```
+
 ## Design principles
 
 1. **Human-in-the-loop by default.** Agents draft; humans approve. Autonomy is earned per-task, per-customer.
