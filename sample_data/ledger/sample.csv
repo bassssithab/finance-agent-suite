@@ -1,0 +1,5 @@
+date,account,memo,debit,credit,reference
+2026-07-01,1000-Cash,Opening balance,1000.00,0,REF001
+2026-07-15,1000-Cash,Vendor payment,0,250.00,REF002
+2026-07-22,1000-Cash,Wire transfer received,500.00,0,LREF100
+2026-07-10,1000-Cash,Bank fee,0,15.00,LREF101
