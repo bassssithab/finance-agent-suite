@@ -1,0 +1,9 @@
+[project]
+name = "knowledge"
+version = "0.1.0"
+description = "Retrieval chassis component (stdlib BM25 lexical search) for the finance-agent-suite platform"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
