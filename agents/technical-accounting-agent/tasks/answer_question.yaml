@@ -1,0 +1,24 @@
+name: answer_question
+description: >
+  Retrieve relevant chunks for a plain-English GAAP/IFRS question from
+  platform/knowledge, draft a strictly-context-grounded, cited answer via the
+  Claude API, and submit the draft for human approval.
+inputs:
+  - question
+  - knowledge_base    # pre-ingested platform/knowledge.KnowledgeBase
+  - top_k             # default 5
+  - model             # default claude-sonnet-5
+  - effort            # default medium
+  - preparer          # default "technical-accounting-agent"
+outputs:
+  - answer_draft          # AnswerDraft: answer_text, citations, chunk_ids, model; see technical_accounting_agent.models
+  - approval_request_id   # null if the model refused the request
+autonomy: draft_only
+connectors: []
+knowledge_corpora:
+  - standard
+  - policy
+audit_events:
+  - chunks_retrieved
+  - answer_drafted            # or answer_refused, on a safety refusal
+  - "approval_submitted:technical_accounting_answer"   # emitted by platform/approvals on submit

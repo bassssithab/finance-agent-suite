@@ -1,0 +1,16 @@
+[project]
+name = "technical-accounting-agent"
+version = "0.1.0"
+description = "GAAP/IFRS research: retrieves platform/knowledge chunks and drafts a cited answer for human review"
+requires-python = ">=3.11"
+# First runtime dependency in the project. Every other pyproject.toml here has
+# dependencies = [] because platform/* and reconciliation-agent are stdlib
+# only. This agent's task 2 (CLAUDE.md workflow) is a real Claude API call,
+# and the project environment's own guidance is to use the official Anthropic
+# SDK rather than hand-rolled HTTP for a Python caller. Scoped to this agent's
+# pyproject.toml only, not platform/ or root, since no other module calls the
+# API yet.
+dependencies = ["anthropic>=0.40,<1"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]

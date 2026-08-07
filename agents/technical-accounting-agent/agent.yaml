@@ -1,0 +1,12 @@
+name: technical-accounting-agent
+version: 0.1.0
+description: Answers plain-English GAAP/IFRS questions from platform/knowledge chunks and drafts a cited response for human review.
+autonomy: draft_only
+connectors: []
+approval_rules:
+  external_effects: always_require_human
+knowledge_corpora:
+  - standard
+  - policy
+tasks:
+  - answer_question
