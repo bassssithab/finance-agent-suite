@@ -1,0 +1,16 @@
+[project]
+name = "audit-readiness-agent"
+version = "0.1.0"
+description = "PBC response drafting: ties an auditor request out to audit-log evidence and drafts a cited memo for human review"
+requires-python = ">=3.11"
+# Second module in the project needing the anthropic SDK (after
+# technical-accounting-agent, see its pyproject.toml for the rationale on why
+# a Python caller should use the official SDK rather than hand-rolled HTTP).
+# Still scoped to this agent's own pyproject.toml, not platform/ or root:
+# two call sites isn't enough to safely design a shared LLM-wrapper
+# interface, and CLAUDE.md rule #5 (one agent per folder) argues against
+# sharing prematurely.
+dependencies = ["anthropic>=0.40,<1"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]

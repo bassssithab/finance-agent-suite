@@ -1,0 +1,28 @@
+name: respond_to_pbc_item
+description: >
+  Tie a structured PBC (Prepared-By-Client) request out to evidence already
+  recorded in a completed reconciliation-agent run's audit log, optionally
+  pull supporting policy chunks from platform/knowledge, draft a strictly
+  evidence-grounded, cited response via the Claude API, and submit the draft
+  for human approval.
+inputs:
+  - pbc_item             # audit_readiness_agent.models.PBCItem
+  - evidence_audit_log   # AuditLogStore holding a completed reconciliation-agent run
+  - knowledge_base       # optional platform/knowledge.KnowledgeBase
+  - top_k                # default 5
+  - model                # default claude-sonnet-5
+  - effort                # default medium
+  - preparer              # default "audit-readiness-agent"
+outputs:
+  - tie_out_result        # TieOutResult: found, entries (audit event ids + summary), gap_reason
+  - response_draft        # PBCResponseDraft: response_text, citations, evidence_event_ids, model
+  - approval_request_id   # null if the model refused the request
+autonomy: draft_only
+connectors: []
+knowledge_corpora:
+  - policy
+audit_events:
+  - evidence_tied_out
+  - "chunks_retrieved"        # only emitted when knowledge_base is passed
+  - response_drafted           # or response_refused, on a safety refusal
+  - "approval_submitted:pbc_response"   # emitted by platform/approvals on submit

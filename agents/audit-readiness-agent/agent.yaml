@@ -1,0 +1,11 @@
+name: audit-readiness-agent
+version: 0.1.0
+description: Ties PBC requests out to evidence already sitting in the audit log, drafts a cited response, and routes it for human review.
+autonomy: draft_only
+connectors: []
+approval_rules:
+  external_effects: always_require_human
+knowledge_corpora:
+  - policy
+tasks:
+  - respond_to_pbc_item
