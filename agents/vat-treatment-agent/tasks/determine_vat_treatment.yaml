@@ -1,0 +1,23 @@
+name: determine_vat_treatment
+description: >
+  Retrieve relevant chunks for an invoice line item's VAT classification from
+  platform/knowledge, draft a strictly-context-grounded, cited answer via the
+  Claude API, and submit the draft for human approval.
+inputs:
+  - line_item       # InvoiceLineItem: goods_type, customer_location, transaction_type
+  - knowledge_base  # pre-ingested platform/knowledge.KnowledgeBase
+  - top_k           # default 5
+  - model           # default claude-sonnet-5
+  - effort          # default medium
+  - preparer        # default "vat-treatment-agent"
+outputs:
+  - vat_treatment_draft   # VatTreatmentDraft: answer_text, citations, chunk_ids, model; see vat_treatment_agent.models
+  - approval_request_id   # null if the model refused the request
+autonomy: draft_only
+connectors: []
+knowledge_corpora:
+  - vat_policy
+audit_events:
+  - chunks_retrieved
+  - treatment_drafted        # or treatment_refused, on a safety refusal
+  - "approval_submitted:vat_treatment_determination"   # emitted by platform/approvals on submit

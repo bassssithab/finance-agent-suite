@@ -1,0 +1,13 @@
+[project]
+name = "vat-treatment-agent"
+version = "0.1.0"
+description = "VAT treatment classification: retrieves platform/knowledge chunks and drafts a cited explanation for human review"
+requires-python = ">=3.11"
+# Same call as agents/technical-accounting-agent/pyproject.toml: this agent
+# also drafts its answer via the Claude API, so it needs its own copy of the
+# anthropic SDK dependency, scoped to this agent's folder (CLAUDE.md rule #5
+# — one agent per folder, shared logic only in platform/).
+dependencies = ["anthropic>=0.40,<1"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]

@@ -1,0 +1,11 @@
+name: vat-treatment-agent
+version: 0.1.0
+description: Classifies the VAT treatment of an invoice line item from platform/knowledge chunks and drafts a cited explanation for human review.
+autonomy: draft_only
+connectors: []
+approval_rules:
+  external_effects: always_require_human
+knowledge_corpora:
+  - vat_policy
+tasks:
+  - determine_vat_treatment
