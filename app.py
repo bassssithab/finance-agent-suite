@@ -10,6 +10,10 @@ functions, unmodified:
   * vat-treatment-agent  : determine_vat_treatment() with a real Claude API
                            call. The API key comes from Streamlit secrets
                            (st.secrets["ANTHROPIC_API_KEY"]), never a .env.
+  * ap-agent             : process_invoice() — vision extraction of an
+                           uploaded (or committed sample) invoice image, a
+                           deterministic line-sum-vs-grand-total check, and
+                           cited GL coding. Real Claude API calls; same key.
 
 Every run here uses throwaway in-memory audit-log / approval-queue stores,
 exactly like agents/vat-treatment-agent/manual_live_run.py — nothing is
@@ -18,6 +22,7 @@ persisted.
 Run:  streamlit run app.py
 """
 
+import importlib.util
 import sys
 import tempfile
 from pathlib import Path
@@ -33,6 +38,7 @@ for path in (
     ROOT / "agents" / "reconciliation-agent",
     ROOT / "agents" / "vat-treatment-agent",
     ROOT / "agents" / "vat-treatment-agent" / "evals",  # synthetic VAT corpus
+    ROOT / "agents" / "ap-agent",
     PLATFORM / "connectors",
     PLATFORM / "approvals",
     PLATFORM / "audit-log",
@@ -41,15 +47,34 @@ for path in (
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
+from ap_agent import process_invoice  # noqa: E402
 from approvals import ApprovalQueue  # noqa: E402
 from audit_log import AuditLogStore  # noqa: E402
+from connectors import FileDocumentConnector  # noqa: E402
 from knowledge import KnowledgeBase  # noqa: E402
 from reconciliation_agent import run_reconciliation  # noqa: E402
 from vat_treatment_agent import InvoiceLineItem, determine_vat_treatment  # noqa: E402
 
 from fixtures import ALL_DOCUMENTS  # noqa: E402  (agents/vat-treatment-agent/evals/fixtures.py)
 
+# agents/ap-agent/evals/fixtures.py also defines ALL_DOCUMENTS (its synthetic
+# chart of accounts). It collides with the VAT `fixtures` module already
+# imported above, so load it by file path under its own name instead.
+_AP_FIXTURES_PATH = ROOT / "agents" / "ap-agent" / "evals" / "fixtures.py"
+_ap_fixtures_spec = importlib.util.spec_from_file_location(
+    "ap_agent_evals_fixtures", _AP_FIXTURES_PATH
+)
+_ap_fixtures = importlib.util.module_from_spec(_ap_fixtures_spec)
+_ap_fixtures_spec.loader.exec_module(_ap_fixtures)
+AP_CHART_OF_ACCOUNTS_DOCS = _ap_fixtures.ALL_DOCUMENTS
+
 SAMPLE_DATA = ROOT / "sample_data"
+AP_INVOICE_DIR = ROOT / "agents" / "ap-agent" / "evals" / "fixtures" / "invoices"
+AP_SAMPLE_INVOICES = {
+    "Clean — office supplies (totals tie, GL coding suggested)": "clean_office_supplies.png",
+    "Consulting services (advisory fees, reimbursable travel)": "consulting_services.png",
+    "Mismatched totals (deterministic check flags a bad grand total)": "mismatched_totals.png",
+}
 
 
 # --------------------------------------------------------------------------
@@ -333,6 +358,236 @@ def _render_vat_result(run, audit_log) -> None:
 
 
 # --------------------------------------------------------------------------
+# AP invoice view
+# --------------------------------------------------------------------------
+def render_ap_invoice() -> None:
+    st.header("AP Invoice Agent")
+    st.write(
+        "Extracts an invoice image via Claude vision, runs a **deterministic** "
+        "line-sum-vs-grand-total check in plain code, retrieves from "
+        "`platform/knowledge` to draft cited GL coding, then submits the draft "
+        "for human approval. The model only transcribes and classifies — it "
+        "never does the arithmetic."
+    )
+    st.caption(
+        "The chart of accounts is a **synthetic test fixture** (\"Larenthia "
+        "Trading Co\", the same fictional jurisdiction as the VAT agent) — not "
+        "a real GL structure. It exists to exercise retrieval, citation, and "
+        "the \"account not in the chart → don't guess\" path."
+    )
+
+    api_key = _get_api_key()
+    if not api_key:
+        st.warning(
+            "**ANTHROPIC_API_KEY is not configured.** The AP agent makes real "
+            "Claude API calls (vision extraction + GL coding), so add the key "
+            "to Streamlit secrets to run it:\n\n"
+            "- locally: create `.streamlit/secrets.toml` with "
+            "`ANTHROPIC_API_KEY = \"sk-ant-...\"`\n"
+            "- deployed: set it in the app's **Settings → Secrets**\n\n"
+            "The reconciliation agent needs no key and works without this."
+        )
+
+    source = st.radio(
+        "Invoice",
+        ["Use a committed sample invoice", "Upload an invoice image"],
+        horizontal=True,
+    )
+
+    document_bytes = None
+    document_id = None
+    if source == "Upload an invoice image":
+        upload = st.file_uploader("Invoice image", type=["png", "jpg", "jpeg"])
+        if upload is not None:
+            document_bytes = upload.getvalue()
+            document_id = "upload" + Path(upload.name).suffix.lower()
+    else:
+        label = st.radio("Sample invoice", list(AP_SAMPLE_INVOICES), index=0)
+        document_id = AP_SAMPLE_INVOICES[label]
+        st.caption(
+            "Sample invoices are fictional test fixtures generated by the eval "
+            "suite (`agents/ap-agent/evals/generate_sample_invoices.py`) — not "
+            "real vendor documents."
+        )
+
+    if not st.button("Process invoice", type="primary", disabled=not api_key):
+        return
+
+    if source == "Upload an invoice image" and document_bytes is None:
+        st.error("Upload a PNG or JPEG invoice image first.")
+        return
+
+    import anthropic
+
+    kb = KnowledgeBase()
+    kb.ingest(AP_CHART_OF_ACCOUNTS_DOCS)
+    audit_log, approval_queue = new_stores()
+    client = anthropic.Anthropic(api_key=api_key)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        if source == "Upload an invoice image":
+            folder = Path(tmp)
+            (folder / document_id).write_bytes(document_bytes)
+        else:
+            folder = AP_INVOICE_DIR
+
+        connector = FileDocumentConnector(source_system="demo_co", folder=folder)
+
+        try:
+            with st.spinner("Extracting the invoice and drafting GL coding via Claude…"):
+                run = process_invoice(
+                    document_id=document_id,
+                    document_connector=connector,
+                    knowledge_base=kb,
+                    audit_log=audit_log,
+                    approval_queue=approval_queue,
+                    client=client,
+                )
+            _render_ap_result(run, audit_log)
+        except anthropic.AnthropicError as exc:
+            st.error(f"Claude API call failed: {exc}")
+        finally:
+            audit_log.close()
+            approval_queue.close()
+
+
+def _render_ap_result(run, audit_log) -> None:
+    if run.draft is None:
+        extraction = run.extraction
+        if extraction.refused:
+            st.error(
+                f"The model refused to extract the image (category: "
+                f"`{extraction.refusal_category}`). No approval request was "
+                "submitted."
+            )
+        else:
+            st.error(
+                f"Extraction failed: {extraction.parse_error}. No approval "
+                "request was submitted."
+            )
+        _render_ap_audit(audit_log)
+        return
+
+    draft = run.draft
+    inv = draft.invoice
+
+    st.subheader("Extracted invoice")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Vendor", inv.vendor_name or "—")
+    c2.metric("Invoice #", inv.invoice_number or "—")
+    c3.metric("Date", inv.invoice_date or "—")
+    c4, c5 = st.columns(2)
+    c4.metric("Currency", inv.currency or "—")
+    c5.metric("Extraction confidence", f"{inv.extraction_confidence:.2f}")
+    st.caption(
+        f"Model: `{draft.model}` · self-reported confidence · draft for a human "
+        "reviewer, not a posted invoice"
+    )
+
+    st.subheader("Line items")
+    st.dataframe(
+        [
+            {
+                "#": i,
+                "description": li.description,
+                "quantity": str(li.quantity),
+                "unit price": str(li.unit_price),
+                "line total": f"{inv.currency} {li.line_total}".strip(),
+            }
+            for i, li in enumerate(inv.line_items)
+        ],
+        hide_index=True,
+    )
+    st.metric("Grand total (as printed)", f"{inv.currency} {inv.grand_total}".strip())
+
+    st.subheader("Deterministic sanity check")
+    sc = draft.sanity_check
+    if draft.discrepancy_flagged:
+        st.error(
+            "**DISCREPANCY FLAGGED.** Line-item sum "
+            f"**{sc.computed_line_sum}** vs. stated grand total "
+            f"**{sc.stated_grand_total}** — difference **{sc.difference}**. "
+            "The draft is still submitted for approval (the agent drafts; it "
+            "doesn't get to block), carrying this flag."
+        )
+        if sc.line_total_issues:
+            st.write("Lines where quantity × unit price ≠ the stated line total:")
+            st.dataframe(
+                [
+                    {
+                        "#": issue.line_index,
+                        "description": issue.description,
+                        "quantity": str(issue.quantity),
+                        "unit price": str(issue.unit_price),
+                        "computed": str(issue.computed_line_total),
+                        "invoice says": str(issue.stated_line_total),
+                        "difference": str(issue.difference),
+                    }
+                    for issue in sc.line_total_issues
+                ],
+                hide_index=True,
+            )
+    else:
+        st.success(
+            f"Totals tie — line-item sum ({sc.computed_line_sum}) equals the "
+            f"stated grand total ({sc.stated_grand_total}), every line's "
+            "arithmetic checks out."
+        )
+
+    st.subheader("GL coding suggestions")
+    if draft.coding_skipped_reason:
+        st.info(f"GL coding skipped: `{draft.coding_skipped_reason}`.")
+    else:
+        st.dataframe(
+            [
+                {
+                    "line #": s.line_index,
+                    "description": s.description,
+                    "account": (
+                        f"{s.account_code} {s.account_name}"
+                        if s.account_code
+                        else "— not in chart"
+                    ),
+                    "rationale": s.rationale,
+                    "citation": s.citation or "—",
+                }
+                for s in draft.gl_suggestions
+            ],
+            hide_index=True,
+        )
+        if draft.coding_citations:
+            st.write("Knowledge chunks the draft is grounded in:")
+            for citation in draft.coding_citations:
+                st.write(f"- {citation}")
+
+    request = run.approval_request
+    st.subheader("Approval")
+    st.write(
+        f"Request **#{request.id}** submitted by `{request.preparer}` — "
+        f"status **{request.status}**, awaiting **{request.current_stage}**. "
+        "Agents draft; humans approve."
+    )
+
+    _render_ap_audit(audit_log)
+
+
+def _render_ap_audit(audit_log) -> None:
+    st.subheader("Audit log")
+    st.write("Every step is recorded in the append-only, hash-chained log:")
+    for e in audit_log.get_all():
+        st.write(f"- `{e.action}` (actor: {e.actor})")
+
+    verification = audit_log.verify_chain()
+    if verification.ok:
+        st.success("verify_chain() → ok (hash chain intact, no tampering detected)")
+    else:
+        st.error(
+            f"verify_chain() → broken at record {verification.broken_record_id}: "
+            f"{verification.reason}"
+        )
+
+
+# --------------------------------------------------------------------------
 # app shell
 # --------------------------------------------------------------------------
 def main() -> None:
@@ -345,13 +600,15 @@ def main() -> None:
 
     agent = st.sidebar.radio(
         "Agent",
-        ["Reconciliation Agent", "VAT Treatment Agent"],
+        ["Reconciliation Agent", "VAT Treatment Agent", "AP Invoice Agent"],
     )
 
     if agent == "Reconciliation Agent":
         render_reconciliation()
-    else:
+    elif agent == "VAT Treatment Agent":
         render_vat_treatment()
+    else:
+        render_ap_invoice()
 
 
 if __name__ == "__main__":
