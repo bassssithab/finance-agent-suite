@@ -1,0 +1,7 @@
+# Top-level dependencies for the Streamlit web demo (app.py).
+# This file is for the demo UI only — each agent/platform module keeps its
+# own pyproject.toml (CLAUDE.md rule #5). `anthropic` is already the
+# vat-treatment-agent's dependency; it's repeated here because app.py
+# constructs the client in the UI layer and injects it into the agent.
+streamlit>=1.40
+anthropic>=0.40,<1
