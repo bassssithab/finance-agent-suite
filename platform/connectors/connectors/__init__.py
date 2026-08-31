@@ -7,7 +7,8 @@ from .document_connector import (
     UnsupportedMediaTypeError,
 )
 from .file_connector import FileConnector
-from .models import BudgetActualLine, SourceDocument, Transaction
+from .journal_entry_connector import FileJournalEntryConnector, JournalEntryConnector
+from .models import BudgetActualLine, JournalEntry, SourceDocument, Transaction
 
 __all__ = [
     "BudgetActualConnector",
@@ -18,6 +19,9 @@ __all__ = [
     "FileBudgetActualConnector",
     "FileDocumentConnector",
     "FileConnector",
+    "FileJournalEntryConnector",
+    "JournalEntry",
+    "JournalEntryConnector",
     "SourceDocument",
     "Transaction",
     "UnknownDocumentError",

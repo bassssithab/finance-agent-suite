@@ -48,6 +48,36 @@ class BudgetActualLine:
 
 
 @dataclass(frozen=True)
+class JournalEntry:
+    """One normalized journal-entry header, as exported from an ERP's GL.
+
+    Carries just enough to test approval controls over the entry: who prepared
+    it and who approved it (`approver_1`, and `approver_2` for entries that went
+    through a second sign-off). `amount` is the entry's absolute magnitude as
+    reported by the source — this connector does not derive it from debit/credit
+    legs (that is `Transaction`'s job); a controls test only needs the size of
+    the entry to decide whether dual approval was required.
+
+    `approver_1` / `approver_2` are `None` when the source leaves them blank (an
+    unapproved or singly-approved entry) — the control test, not the connector,
+    decides whether that is a violation. `raw` keeps the original CSV row so a
+    normalized record can always be traced back to the exact line it came from.
+    """
+
+    source_system: str
+    source_capability: str  # always "journal_entries"
+    entry_id: str           # source's own id for the entry, e.g. "JE-1042"
+    date: date
+    account: str            # GL account the entry posts to, as given
+    amount: Decimal         # entry magnitude as reported by the source
+    currency: str
+    preparer: str
+    approver_1: Optional[str]
+    approver_2: Optional[str]
+    raw: dict[str, str]
+
+
+@dataclass(frozen=True)
 class SourceDocument:
     """One binary source document (a scanned invoice, receipt, contract PDF)
     handed to an agent by a document connector.

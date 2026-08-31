@@ -1,0 +1,5 @@
+entry_id,date,account,amount,preparer,approver_1,approver_2,currency
+JE-1002,2026-07-03,6000,4200.00,dpatel,rmorgan,,USD
+JE-1001,2026-07-02,4000,88000.00,dpatel,rmorgan,tokafor,USD
+JE-1004,2026-07-09,6100,950.00,lchen,,,
+JE-1003,2026-07-05,5000,15000.00,lchen,lchen,,USD
