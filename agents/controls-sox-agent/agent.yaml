@@ -1,0 +1,19 @@
+name: controls-sox-agent
+version: 0.1.0
+description: >
+  SOX / internal-controls testing. Tests journal-entry approvals against a
+  segregation-of-duties control deterministically — flagging entries where the
+  preparer also approved, where two distinct approvers are missing above a
+  configurable dollar threshold, or where an entry is unapproved — drafts a
+  cited plain-English deficiency narrative for each exception (grounded in
+  platform/knowledge internal-controls policy when available), and submits the
+  full control-test report for human approval.
+autonomy: draft_only
+connectors:
+  - erp: read           # journal-entry export, via platform/connectors FileJournalEntryConnector
+approval_rules:
+  external_effects: always_require_human
+knowledge_corpora:
+  - internal_controls_policy
+tasks:
+  - test_journal_entry_sod

@@ -1,0 +1,13 @@
+[project]
+name = "controls-sox-agent"
+version = "0.1.0"
+description = "SOX / internal-controls testing: tests journal-entry approvals against a segregation-of-duties control deterministically, drafts cited deficiency narratives for the exceptions, and routes the control-test report to human approval"
+requires-python = ">=3.11"
+# Own copy of the anthropic SDK, scoped to this agent's folder (CLAUDE.md rule
+# #5 — one agent per folder, shared logic only in platform/). This agent calls
+# the Claude API directly to draft deficiency narratives, same as
+# agents/close-agent, agents/ap-agent and agents/vat-treatment-agent.
+dependencies = ["anthropic>=0.40,<1"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]

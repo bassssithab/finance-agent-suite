@@ -1,0 +1,5 @@
+entry_id,date,account,amount,preparer,approver_1,approver_2,currency
+JE-4001,2026-07-03,5000,50000.00,d.okafor,r.singh,,USD
+JE-4002,2026-07-05,6000,900.00,l.chen,,,USD
+JE-4003,2026-07-07,4000,120000.00,m.alvarez,R.Singh ,r.singh,USD
+JE-4004,2026-07-09,6100,4800.00,d.okafor,r.singh,,USD

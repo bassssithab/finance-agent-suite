@@ -1,0 +1,33 @@
+name: test_journal_entry_sod
+description: >
+  Fetch a batch of journal entries through a journal-entry connector, test each
+  entry against the segregation-of-duties control deterministically (preparer is
+  not also an approver; the two named approvers are distinct; an entry at or
+  above a configurable dollar threshold has a second approver), draft a cited
+  plain-English deficiency narrative for each flagged exception from
+  platform/knowledge internal-controls-policy chunks (ungrounded when none are
+  relevant), and submit the full control-test report for human approval.
+inputs:
+  - source_system
+  - entries_folder        # folder of journal-entry CSVs (entry_id,date,account,amount,preparer,approver_1,approver_2[,currency])
+  - knowledge_base        # pre-ingested platform/knowledge.KnowledgeBase
+  - model                 # default claude-sonnet-5
+  - effort                # default medium
+  - policy                # controls_sox_agent.ControlPolicy; default dual_approval_threshold=50000, require_distinct_approvers=True
+  - retrieval_top_k       # default 3 (chunks retrieved per flagged exception)
+  - preparer              # default "controls-sox-agent"
+outputs:
+  - control_test_report   # ControlTestReport: every entry tested, flagged exceptions, drafted narratives; see controls_sox_agent.models
+  - approval_request_id
+autonomy: draft_only
+connectors:
+  - erp: read (via platform/connectors FileJournalEntryConnector)
+knowledge_corpora:
+  - internal_controls_policy
+audit_events:
+  - journal_entries_retrieved
+  - sod_control_tested                        # carries the entry_ids tested + each flagged exception's deterministic reason
+  - deficiency_context_retrieved              # or deficiency_narratives_skipped (nothing flagged)
+  - deficiency_narratives_drafted             # or deficiency_narratives_refused / deficiency_narratives_failed
+  - control_test_report_generated
+  - "approval_submitted:control_test_report"  # emitted by platform/approvals on submit

@@ -43,7 +43,7 @@ Legend: ✅ **Built & tested** — real code, passing evals, safe to demo.
 | Agent | Status | Workflow | What it automates | What it demonstrates |
 |---|---|---|---|---|
 | [`audit-readiness-agent`](agents/audit-readiness-agent) | ✅ | External audit (auditee side) | PBC responses, evidence collection, tie-out indexing | **Flagship.** Chains `reconciliation-agent`'s audit log and `platform/knowledge` citations into a drafted PBC response — the cross-agent reuse story end to end |
-| [`controls-sox-agent`](agents/controls-sox-agent) | 🚧 | SOX / internal controls | Control testing, walkthrough docs, deficiency tracking | |
+| [`controls-sox-agent`](agents/controls-sox-agent) | ✅ | SOX / internal controls | Deterministic segregation-of-duties testing over journal-entry approvals (self-approval, missing second approver above a configurable threshold, duplicate/absent approvers), cited plain-English deficiency narratives from `platform/knowledge`, routed to human approval (walkthrough docs and broader deficiency tracking are later iterations) | Deterministic control test with an LLM only on the deficiency narrative, grounded-or-graceful knowledge use, full approval/audit chain |
 
 ### Tax & regulatory
 | Agent | Status | Workflow | What it automates | What it demonstrates |
@@ -77,11 +77,11 @@ python demo.py
 ```
 
 The Claude-backed agents (`technical-accounting-agent`, `audit-readiness-agent`,
-`vat-treatment-agent`, `ap-agent`, `close-agent`) each ship a narrated
-`manual_live_run.py` that makes real Claude API calls end to end — for
-`close-agent`, the deterministic variance table, the flagged lines with their
-reasons, the drafted explanations with citations, approval submission, and
-audit-log verification. They need `ANTHROPIC_API_KEY` set and cost real tokens,
+`vat-treatment-agent`, `ap-agent`, `close-agent`, `controls-sox-agent`) each
+ship a narrated `manual_live_run.py` that makes real Claude API calls end to
+end — for `close-agent`, the deterministic variance table, the flagged lines
+with their reasons, the drafted explanations with citations, approval
+submission, and audit-log verification. They need `ANTHROPIC_API_KEY` set and cost real tokens,
 so they're not run in CI; see each agent's README for the exact command.
 
 ## Design principles
