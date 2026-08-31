@@ -1,0 +1,5 @@
+period,account,line_item,category,amount,currency
+2026-09,4000,Product revenue,Revenue,430000.00,USD
+2026-09,4100,Support revenue,Revenue,82000.00,USD
+2026-09,6400,Travel,Operating expenses,9500.00,USD
+2026-09,6500,Bank fees,Operating expenses,1200.00,USD

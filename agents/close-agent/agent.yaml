@@ -1,0 +1,17 @@
+name: close-agent
+version: 0.1.0
+description: >
+  Financial close variance analysis. Computes budget-vs-actual variances by
+  line item deterministically, flags those over configurable percentage/amount
+  thresholds, drafts cited plain-English explanations for the flagged items
+  (grounded in platform/knowledge accounting policy when available), and
+  submits the full variance report for human approval.
+autonomy: draft_only
+connectors:
+  - erp: read           # budget + actuals exports, via platform/connectors FileBudgetActualConnector
+approval_rules:
+  external_effects: always_require_human
+knowledge_corpora:
+  - accounting_policy
+tasks:
+  - analyze_period_variances

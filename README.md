@@ -36,7 +36,7 @@ Legend: ✅ **Built & tested** — real code, passing evals, safe to demo.
 | Agent | Status | Workflow | What it automates | What it demonstrates |
 |---|---|---|---|---|
 | [`reconciliation-agent`](agents/reconciliation-agent) | ✅ | R2R | Bank/balance-sheet/intercompany matching, exception handling | Deterministic matching plus a full approval/audit chain, zero LLM calls, zero setup — `python demo.py` |
-| [`close-agent`](agents/close-agent) | 🚧 | Financial close | Close checklist, JE drafting, flux explanations | |
+| [`close-agent`](agents/close-agent) | ✅ | Financial close | Deterministic budget-vs-actual variances by line item, configurable threshold flagging, cited plain-English explanations for flagged items from `platform/knowledge`, routed to human approval (close-checklist orchestration and JE drafting are later iterations) | Deterministic variance math with an LLM only on the narrative, grounded-or-graceful knowledge use, full approval/audit chain |
 | [`fpa-agent`](agents/fpa-agent) | 🚧 | FP&A | Budget-vs-actual narratives, forecasting, board packs | |
 
 ### Assurance
@@ -77,12 +77,12 @@ python demo.py
 ```
 
 The Claude-backed agents (`technical-accounting-agent`, `audit-readiness-agent`,
-`vat-treatment-agent`, `ap-agent`) each ship a narrated `manual_live_run.py`
-that makes real Claude API calls end to end — for `ap-agent`, vision extraction
-of the sample invoice images, the deterministic totals check, cited GL coding,
-approval submission, and audit-log verification. They need `ANTHROPIC_API_KEY`
-set and cost real tokens, so they're not run in CI; see each agent's README for
-the exact command.
+`vat-treatment-agent`, `ap-agent`, `close-agent`) each ship a narrated
+`manual_live_run.py` that makes real Claude API calls end to end — for
+`close-agent`, the deterministic variance table, the flagged lines with their
+reasons, the drafted explanations with citations, approval submission, and
+audit-log verification. They need `ANTHROPIC_API_KEY` set and cost real tokens,
+so they're not run in CI; see each agent's README for the exact command.
 
 ## Design principles
 
@@ -93,7 +93,7 @@ the exact command.
 
 ## Status
 
-5 of 13 agents are built and tested end to end (see the ✅ rows in the catalog
+6 of 13 agents are built and tested end to end (see the ✅ rows in the catalog
 above); the rest are scaffolds. See [`docs/ROADMAP.md`](docs/ROADMAP.md) for
 build order and [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the
 technical design.

@@ -26,6 +26,28 @@ class Transaction:
 
 
 @dataclass(frozen=True)
+class BudgetActualLine:
+    """One normalized planning/actuals line for a single period.
+
+    A budget export and an actuals export share this shape; `source_capability`
+    ("budget" or "actuals") is the only thing that distinguishes them, the same
+    way `Transaction.source_capability` distinguishes a bank line from a ledger
+    line. `raw` keeps the original source row so a human or agent can trace a
+    normalized record back to the exact CSV line it came from.
+    """
+
+    source_system: str
+    source_capability: str  # "budget" | "actuals"
+    period: str             # as given, e.g. "2026-07" — no normalization
+    account: str            # GL account code, e.g. "6000"
+    line_item: str          # human label, e.g. "Marketing — paid media"
+    category: str            # optional grouping, e.g. "Operating expenses"; "" if absent
+    amount: Decimal
+    currency: str
+    raw: dict[str, str]
+
+
+@dataclass(frozen=True)
 class SourceDocument:
     """One binary source document (a scanned invoice, receipt, contract PDF)
     handed to an agent by a document connector.

@@ -1,0 +1,34 @@
+name: analyze_period_variances
+description: >
+  Fetch a period's budget and actuals lines through a budget/actuals connector,
+  compute the variance for every line item deterministically (actual minus
+  budget, and percentage variance), flag the lines that breach configurable
+  percentage/amount thresholds, draft a cited plain-English explanation for each
+  flagged line from platform/knowledge accounting-policy chunks (ungrounded when
+  none are relevant), and submit the full variance report for human approval.
+inputs:
+  - source_system
+  - period                # exact-match string, e.g. "2026-07"
+  - budget_folder         # folder of budget CSVs (period,account,line_item,category,amount,currency)
+  - actuals_folder        # folder of actuals CSVs, same schema
+  - knowledge_base        # pre-ingested platform/knowledge.KnowledgeBase
+  - model                 # default claude-sonnet-5
+  - effort                # default medium
+  - thresholds            # close_agent.FlagThresholds; default pct=10%, amount=None
+  - retrieval_top_k       # default 3 (chunks retrieved per flagged line)
+  - preparer              # default "close-agent"
+outputs:
+  - variance_report       # VarianceReport: all line variances, flagged items, drafted explanations; see close_agent.models
+  - approval_request_id
+autonomy: draft_only
+connectors:
+  - erp: read (via platform/connectors FileBudgetActualConnector)
+knowledge_corpora:
+  - accounting_policy
+audit_events:
+  - budget_actuals_retrieved
+  - variances_computed                       # carries the flagged lines + the deterministic reason each was flagged
+  - explanation_context_retrieved            # or variance_explanations_skipped (nothing flagged)
+  - variance_explanations_drafted            # or variance_explanations_refused / variance_explanations_failed
+  - variance_report_generated
+  - "approval_submitted:variance_report"     # emitted by platform/approvals on submit

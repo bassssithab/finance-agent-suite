@@ -1,0 +1,6 @@
+period,account,line_item,category,amount,currency
+2026-07,5000,Cost of goods sold,Cost of sales,900000.00,USD
+2026-07,6000,Marketing — paid media,Operating expenses,40000.00,USD
+2026-07,6100,Office supplies,Operating expenses,5000.00,USD
+2026-07,6200,Contract labour,Operating expenses,30000.00,USD
+2026-07,7000,Rent,Facilities,12000.00,USD

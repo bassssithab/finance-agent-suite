@@ -66,6 +66,40 @@ within `folder`; ids containing path separators or `..` are rejected. Like
 records the `sha256` and identity of the document it acted on in its own
 `AuditEvent`.
 
+## `FileBudgetActualConnector`
+
+Read-only stand-in for a real budget / actuals feed (a planning tool or ERP
+export), for agents that work from a period's plan-vs-actual line items rather
+than transactions or documents. It reads CSVs from a budget folder and an
+actuals folder and returns `BudgetActualLine` records (`source_capability` is
+`"budget"` or `"actuals"`, the same way `FileConnector` tags `"bank"` vs
+`"erp"`).
+
+Expected CSV schema (budget and actuals are identical in shape):
+
+```
+period,account,line_item,category,amount,currency
+```
+
+`category` and `currency` are optional — blank/missing `category` becomes `""`,
+blank/missing `currency` becomes `"USD"`. `period`, `account`, and `line_item`
+are required; a blank one raises `ConnectorParseError`.
+
+```python
+from connectors import FileBudgetActualConnector
+
+connector = FileBudgetActualConnector(
+    source_system="sample_co",
+    budget_folder="./sample_data/budget",
+    actuals_folder="./sample_data/actuals",
+)
+
+lines = connector.fetch_lines(period="2026-07")   # exact-match period filter
+```
+
+Like the other connectors it never writes to `platform/audit-log` — the calling
+agent records what it retrieved in its own `AuditEvent`.
+
 ## Development
 
 ```bash
