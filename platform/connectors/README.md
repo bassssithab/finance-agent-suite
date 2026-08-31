@@ -43,6 +43,29 @@ Reading data isn't itself an approval-gated action, so `FileConnector`
 doesn't write to `platform/audit-log` — the calling agent records what it
 retrieved as part of its own `AuditEvent` when it later takes an action.
 
+## `FileDocumentConnector`
+
+Read-only stand-in for a real document store / email-attachment source
+(SharePoint, Drive, S3, email — see docs/ARCHITECTURE.md), for agents that
+work from binary source documents rather than normalized rows. It reads files
+from a local folder and returns a `SourceDocument` (raw `content` bytes,
+`media_type`, `size_bytes`, and a `sha256` over the content).
+
+```python
+from connectors import FileDocumentConnector
+
+docs = FileDocumentConnector(source_system="sample_co", folder="./sample_data/invoices")
+docs.list_documents()                     # ["invoice_0417.png", ...]
+doc = docs.fetch_document("invoice_0417.png")
+doc.media_type                            # "image/png"
+```
+
+Supported types: PNG, JPEG, GIF, WebP, PDF. `document_id` is the bare filename
+within `folder`; ids containing path separators or `..` are rejected. Like
+`FileConnector`, it never writes to `platform/audit-log` — the calling agent
+records the `sha256` and identity of the document it acted on in its own
+`AuditEvent`.
+
 ## Development
 
 ```bash

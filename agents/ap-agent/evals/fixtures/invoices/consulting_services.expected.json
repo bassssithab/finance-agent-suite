@@ -1,0 +1,22 @@
+{
+  "vendor_name": "Meridian Advisory Partners LLC",
+  "invoice_number": "MAP-4491",
+  "invoice_date": "2026-08-14",
+  "currency": "USD",
+  "line_items": [
+    {
+      "description": "Senior advisory services - August 2026",
+      "quantity": "32",
+      "unit_price": "225.00",
+      "line_total": "7200.00"
+    },
+    {
+      "description": "Travel & incidentals (reimbursable, at cost)",
+      "quantity": "1",
+      "unit_price": "512.40",
+      "line_total": "512.40"
+    }
+  ],
+  "grand_total": "7712.40",
+  "extraction_confidence": 0.95
+}

@@ -1,0 +1,16 @@
+name: ap-agent
+version: 0.1.0
+description: >
+  Extracts a scanned/photographed invoice via Claude vision, deterministically
+  checks that line items sum to the grand total, drafts GL coding from
+  platform/knowledge chart-of-accounts guidance when available, and submits the
+  invoice plus suggested coding for human approval.
+autonomy: draft_only
+connectors:
+  - documents: read
+approval_rules:
+  external_effects: always_require_human
+knowledge_corpora:
+  - chart_of_accounts
+tasks:
+  - extract_and_code_invoice

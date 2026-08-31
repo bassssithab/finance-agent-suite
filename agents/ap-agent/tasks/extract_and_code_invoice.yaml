@@ -1,0 +1,29 @@
+name: extract_and_code_invoice
+description: >
+  Fetch an invoice image through a document connector, extract its structured
+  fields via Claude vision (forced record_invoice tool call), run a
+  deterministic check that line items sum to the grand total, optionally draft
+  a GL account per line from platform/knowledge chart-of-accounts chunks, and
+  submit the invoice plus suggested coding for human approval.
+inputs:
+  - document_id          # filename within the DocumentConnector's source
+  - document_connector   # platform/connectors.DocumentConnector (read-only)
+  - knowledge_base       # pre-ingested platform/knowledge.KnowledgeBase
+  - model                # default claude-sonnet-5
+  - effort               # default medium
+  - coding_top_k         # default 3 (chunks retrieved per line item)
+  - preparer             # default "ap-agent"
+outputs:
+  - invoice_draft        # InvoiceDraft: extracted invoice, sanity_check, discrepancy_flagged, gl_suggestions; see ap_agent.models
+  - approval_request_id  # null if extraction refused or its output could not be parsed
+autonomy: draft_only
+connectors:
+  - documents: read
+knowledge_corpora:
+  - chart_of_accounts
+audit_events:
+  - invoice_document_received
+  - invoice_extracted                 # or invoice_extraction_failed
+  - sanity_check_completed            # always — carries discrepancy_flagged + computed vs. stated totals
+  - gl_coding_suggested               # or gl_coding_skipped (no relevant knowledge) / gl_coding_failed
+  - "approval_submitted:ap_invoice_coding"   # emitted by platform/approvals on submit

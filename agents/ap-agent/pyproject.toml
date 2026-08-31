@@ -1,0 +1,16 @@
+[project]
+name = "ap-agent"
+version = "0.1.0"
+description = "Accounts-payable invoice capture: extracts a scanned/photographed invoice via Claude vision, deterministically checks its totals, drafts GL coding from platform/knowledge, and routes everything to human approval"
+requires-python = ">=3.11"
+# Own copy of the anthropic SDK, scoped to this agent's folder (CLAUDE.md rule
+# #5 — one agent per folder, shared logic only in platform/). This agent calls
+# the Claude API directly for vision extraction and GL-coding drafts, same as
+# agents/vat-treatment-agent and agents/technical-accounting-agent.
+dependencies = ["anthropic>=0.40,<1"]
+
+[project.optional-dependencies]
+# Pillow is used ONLY by evals/generate_sample_invoices.py to (re)generate the
+# committed sample-invoice PNG fixtures. It is not imported at runtime or by
+# the test suite — the tests read the committed .png / .expected.json files.
+dev = ["pytest>=8", "pillow>=10"]

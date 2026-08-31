@@ -1,0 +1,28 @@
+{
+  "vendor_name": "Nordwind Office Supplies GmbH",
+  "invoice_number": "NB-2026-0417",
+  "invoice_date": "2026-07-14",
+  "currency": "EUR",
+  "line_items": [
+    {
+      "description": "Copier paper A4 80gsm (box of 5 reams)",
+      "quantity": "6",
+      "unit_price": "24.50",
+      "line_total": "147.00"
+    },
+    {
+      "description": "Toner cartridge, black (XL yield)",
+      "quantity": "3",
+      "unit_price": "89.00",
+      "line_total": "267.00"
+    },
+    {
+      "description": "Desk organiser, mesh steel",
+      "quantity": "4",
+      "unit_price": "12.75",
+      "line_total": "51.00"
+    }
+  ],
+  "grand_total": "465.00",
+  "extraction_confidence": 0.97
+}

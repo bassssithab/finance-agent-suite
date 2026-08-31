@@ -28,7 +28,7 @@ Legend: ✅ **Built & tested** — real code, passing evals, safe to demo.
 ### Transactional finance
 | Agent | Status | Workflow | What it automates |
 |---|---|---|---|
-| [`ap-agent`](agents/ap-agent) | 🚧 | Procure-to-Pay | Invoice capture, 3-way match, GL coding, approval routing |
+| [`ap-agent`](agents/ap-agent) | ✅ | Procure-to-Pay | Invoice image → Claude-vision field extraction, deterministic totals check, cited GL coding from `platform/knowledge`, routed to human approval (3-way match against POs is a later iteration) |
 | [`ar-collections-agent`](agents/ar-collections-agent) | 🚧 | Order-to-Cash | Cash application, dunning, dispute triage, DSO analytics |
 | [`expense-agent`](agents/expense-agent) | 🚧 | T&E | Receipt audit, policy checks, duplicate/fraud flags |
 
@@ -76,12 +76,13 @@ audit log's hash-chain verification. Stdlib only, no LLM calls, no setup:
 python demo.py
 ```
 
-The three knowledge-grounded, Claude-backed agents (`technical-accounting-agent`,
-`audit-readiness-agent`, `vat-treatment-agent`) each ship a narrated
-`manual_live_run.py` that makes one real Claude API call end to end — retrieval,
-drafted answer with citations, approval submission, audit-log verification. They
-need `ANTHROPIC_API_KEY` set and cost real tokens, so they're not run in CI; see
-each agent's README for the exact command.
+The Claude-backed agents (`technical-accounting-agent`, `audit-readiness-agent`,
+`vat-treatment-agent`, `ap-agent`) each ship a narrated `manual_live_run.py`
+that makes real Claude API calls end to end — for `ap-agent`, vision extraction
+of the sample invoice images, the deterministic totals check, cited GL coding,
+approval submission, and audit-log verification. They need `ANTHROPIC_API_KEY`
+set and cost real tokens, so they're not run in CI; see each agent's README for
+the exact command.
 
 ## Design principles
 
@@ -92,7 +93,7 @@ each agent's README for the exact command.
 
 ## Status
 
-4 of 13 agents are built and tested end to end (see the ✅ rows in the catalog
+5 of 13 agents are built and tested end to end (see the ✅ rows in the catalog
 above); the rest are scaffolds. See [`docs/ROADMAP.md`](docs/ROADMAP.md) for
 build order and [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the
 technical design.
