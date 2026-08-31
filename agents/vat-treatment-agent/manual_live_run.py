@@ -43,8 +43,26 @@ LINE_ITEM = InvoiceLineItem(
     transaction_type="drop-shipped directly from a foreign supplier to the foreign customer",
 )
 
+WIDTH = 72
+
+
+def header(title: str) -> None:
+    print()
+    print("=" * WIDTH)
+    print(f" {title}")
+    print("=" * WIDTH)
+
+
+def step(text: str) -> None:
+    print(f"\n--- {text} ---")
+
 
 def main() -> None:
+    print("=" * WIDTH)
+    print(" LedgerMind — VAT Treatment Agent Demo")
+    print(" Classifying a nuanced line item, grounded strictly in retrieved chunks.")
+    print("=" * WIDTH)
+
     kb = KnowledgeBase()
     kb.ingest(ALL_DOCUMENTS)
 
@@ -52,7 +70,10 @@ def main() -> None:
     approval_queue = ApprovalQueue(":memory:", audit_log)
     client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from the environment
 
-    print(f"Line item: {LINE_ITEM}\n")
+    header("1. Line item")
+    print(LINE_ITEM)
+    print("\nAgent retrieves from platform/knowledge only — no free-standing")
+    print("VAT knowledge is allowed to classify this.")
 
     run = determine_vat_treatment(
         line_item=LINE_ITEM,
@@ -62,27 +83,39 @@ def main() -> None:
         client=client,
     )
 
-    print("Retrieved chunks:")
+    header("2. Retrieved knowledge chunks")
     for event in audit_log.get_all():
         if event.action == "chunks_retrieved":
             for chunk in event.output["chunks"]:
                 print(f"  [{chunk['score']:.3f}] {chunk['citation']}")
 
+    header("3. Drafting via Claude API")
     if run.draft.refused:
-        print(f"\nModel refused (category={run.draft.refusal_category!r}) — no approval request submitted.")
+        print(f"Model refused (category={run.draft.refusal_category!r}) — no approval request submitted.")
+        header("Done")
         return
 
-    print(f"\nModel: {run.draft.model}")
-    print(f"Drafted answer:\n{run.draft.answer_text}\n")
+    step(f"Model: {run.draft.model}")
+    print(f"{run.draft.answer_text}\n")
     print(f"Citations: {run.draft.citations}")
+
+    header("4. Submitting for human approval")
     print(
-        f"\nSubmitted for approval: request id={run.approval_request.id}, "
-        f"status={run.approval_request.status}, stage={run.approval_request.current_stage}"
+        f"Request id={run.approval_request.id}, status={run.approval_request.status}, "
+        f"stage={run.approval_request.current_stage}"
     )
-    print(f"Audit chain verified: {audit_log.verify_chain().ok}")
+    print("Drafted only — never treated as final until a reviewer and approver sign off.")
+
+    header("5. Audit log chain verification")
+    print(f"verify_chain() -> ok={audit_log.verify_chain().ok}")
 
     audit_log.close()
     approval_queue.close()
+
+    header("Done")
+    print("Retrieval, the drafted classification, and the approval submission are")
+    print("all sitting in the hash-chained audit log as evidence.")
+    print()
 
 
 if __name__ == "__main__":

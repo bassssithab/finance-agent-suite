@@ -1,6 +1,6 @@
 # LedgerMind — AI Agents for Finance, Accounting & Compliance
 
-> **One platform. Twelve agents. Every finance workflow.**
+> **One platform. Thirteen agents. Every finance workflow.**
 > *(LedgerMind is a working name — see `docs/BRAND.md` for alternatives.)*
 
 LedgerMind is a suite of domain-specific AI agents that automate the manual,
@@ -22,33 +22,37 @@ Agents are thin domain layers on top. Build the chassis once → ship agents fas
 
 ## The agent catalog
 
+Legend: ✅ **Built & tested** — real code, passing evals, safe to demo.
+🚧 **Planned** — scaffold only, not yet implemented.
+
 ### Transactional finance
-| Agent | Workflow | What it automates |
-|---|---|---|
-| [`ap-agent`](agents/ap-agent) | Procure-to-Pay | Invoice capture, 3-way match, GL coding, approval routing |
-| [`ar-collections-agent`](agents/ar-collections-agent) | Order-to-Cash | Cash application, dunning, dispute triage, DSO analytics |
-| [`expense-agent`](agents/expense-agent) | T&E | Receipt audit, policy checks, duplicate/fraud flags |
+| Agent | Status | Workflow | What it automates |
+|---|---|---|---|
+| [`ap-agent`](agents/ap-agent) | 🚧 | Procure-to-Pay | Invoice capture, 3-way match, GL coding, approval routing |
+| [`ar-collections-agent`](agents/ar-collections-agent) | 🚧 | Order-to-Cash | Cash application, dunning, dispute triage, DSO analytics |
+| [`expense-agent`](agents/expense-agent) | 🚧 | T&E | Receipt audit, policy checks, duplicate/fraud flags |
 
 ### Record-to-Report
-| Agent | Workflow | What it automates |
-|---|---|---|
-| [`reconciliation-agent`](agents/reconciliation-agent) | R2R | Bank/balance-sheet/intercompany matching, exception handling |
-| [`close-agent`](agents/close-agent) | Financial close | Close checklist, JE drafting, flux explanations |
-| [`fpa-agent`](agents/fpa-agent) | FP&A | Budget-vs-actual narratives, forecasting, board packs |
+| Agent | Status | Workflow | What it automates | What it demonstrates |
+|---|---|---|---|---|
+| [`reconciliation-agent`](agents/reconciliation-agent) | ✅ | R2R | Bank/balance-sheet/intercompany matching, exception handling | Deterministic matching plus a full approval/audit chain, zero LLM calls, zero setup — `python demo.py` |
+| [`close-agent`](agents/close-agent) | 🚧 | Financial close | Close checklist, JE drafting, flux explanations | |
+| [`fpa-agent`](agents/fpa-agent) | 🚧 | FP&A | Budget-vs-actual narratives, forecasting, board packs | |
 
 ### Assurance
-| Agent | Workflow | What it automates |
-|---|---|---|
-| [`audit-readiness-agent`](agents/audit-readiness-agent) | External audit (auditee side) | PBC responses, evidence collection, tie-out indexing |
-| [`controls-sox-agent`](agents/controls-sox-agent) | SOX / internal controls | Control testing, walkthrough docs, deficiency tracking |
+| Agent | Status | Workflow | What it automates | What it demonstrates |
+|---|---|---|---|---|
+| [`audit-readiness-agent`](agents/audit-readiness-agent) | ✅ | External audit (auditee side) | PBC responses, evidence collection, tie-out indexing | **Flagship.** Chains `reconciliation-agent`'s audit log and `platform/knowledge` citations into a drafted PBC response — the cross-agent reuse story end to end |
+| [`controls-sox-agent`](agents/controls-sox-agent) | 🚧 | SOX / internal controls | Control testing, walkthrough docs, deficiency tracking | |
 
 ### Tax & regulatory
-| Agent | Workflow | What it automates |
-|---|---|---|
-| [`tax-compliance-agent`](agents/tax-compliance-agent) | Indirect & direct tax | E-invoice/VAT validation, provision support, filing prep |
-| [`technical-accounting-agent`](agents/technical-accounting-agent) | GAAP/IFRS research | Standard research, position memos (ASC 606/842/815) |
-| [`regulatory-change-agent`](agents/regulatory-change-agent) | Reg change management | Monitors regulators, maps rules → obligations → controls |
-| [`financial-crime-agent`](agents/financial-crime-agent) | AML/KYC | KYC doc review, alert narratives, SAR drafting support |
+| Agent | Status | Workflow | What it automates | What it demonstrates |
+|---|---|---|---|---|
+| [`tax-compliance-agent`](agents/tax-compliance-agent) | 🚧 | Indirect & direct tax | E-invoice/VAT validation, provision support, filing prep | |
+| [`vat-treatment-agent`](agents/vat-treatment-agent) | ✅ | Indirect tax (VAT) | Classifies an invoice line's VAT treatment (standard/zero-rated/exempt/out-of-scope) | Cited VAT classification grounded strictly in `platform/knowledge`, drafted via Claude, gated on human approval |
+| [`technical-accounting-agent`](agents/technical-accounting-agent) | ✅ | GAAP/IFRS research | Standard research, position memos (ASC 606/842/815) | Cited GAAP/IFRS Q&A grounded strictly in `platform/knowledge`, same knowledge-grounded/approval-gated pattern as `vat-treatment-agent` |
+| [`regulatory-change-agent`](agents/regulatory-change-agent) | 🚧 | Reg change management | Monitors regulators, maps rules → obligations → controls | |
+| [`financial-crime-agent`](agents/financial-crime-agent) | 🚧 | AML/KYC | KYC doc review, alert narratives, SAR drafting support | |
 
 ## Repo layout
 
@@ -72,6 +76,13 @@ audit log's hash-chain verification. Stdlib only, no LLM calls, no setup:
 python demo.py
 ```
 
+The three knowledge-grounded, Claude-backed agents (`technical-accounting-agent`,
+`audit-readiness-agent`, `vat-treatment-agent`) each ship a narrated
+`manual_live_run.py` that makes one real Claude API call end to end — retrieval,
+drafted answer with citations, approval submission, audit-log verification. They
+need `ANTHROPIC_API_KEY` set and cost real tokens, so they're not run in CI; see
+each agent's README for the exact command.
+
 ## Design principles
 
 1. **Human-in-the-loop by default.** Agents draft; humans approve. Autonomy is earned per-task, per-customer.
@@ -81,5 +92,7 @@ python demo.py
 
 ## Status
 
-🚧 Early scaffold. See [`docs/ROADMAP.md`](docs/ROADMAP.md) for build order and
-[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the technical design.
+4 of 13 agents are built and tested end to end (see the ✅ rows in the catalog
+above); the rest are scaffolds. See [`docs/ROADMAP.md`](docs/ROADMAP.md) for
+build order and [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the
+technical design.

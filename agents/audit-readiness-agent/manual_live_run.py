@@ -46,8 +46,27 @@ PBC_ITEM = PBCItem(
     source_system="sample_co",
 )
 
+WIDTH = 72
+
+
+def header(title: str) -> None:
+    print()
+    print("=" * WIDTH)
+    print(f" {title}")
+    print("=" * WIDTH)
+
+
+def step(text: str) -> None:
+    print(f"\n--- {text} ---")
+
 
 def main() -> None:
+    print("=" * WIDTH)
+    print(" LedgerMind — Audit Readiness Agent Demo (flagship)")
+    print(" Ties a PBC request to a completed reconciliation-agent run,")
+    print(" then drafts a cited response via Claude.")
+    print("=" * WIDTH)
+
     evidence_audit_log = build_evidence_log()
 
     kb = KnowledgeBase()
@@ -57,7 +76,10 @@ def main() -> None:
     approval_queue = ApprovalQueue(":memory:", audit_log)
     client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from the environment
 
-    print(f"PBC item: {PBC_ITEM.item_id} — {PBC_ITEM.description}\n")
+    header("1. PBC request")
+    print(f"{PBC_ITEM.item_id} — {PBC_ITEM.description}")
+    print("\nAgent tie-out is deterministic code, matched on period/evidence_type,")
+    print("never on this free-text description.")
 
     run = respond_to_pbc_item(
         pbc_item=PBC_ITEM,
@@ -68,28 +90,40 @@ def main() -> None:
         client=client,
     )
 
+    header("2. Tie-out against reconciliation-agent's audit log")
     print(f"Tie-out found: {run.tie_out.found}")
     for entry in run.tie_out.entries:
         print(f"  cites audit events {entry.audit_event_ids}, approval_status={entry.approval_status}")
         print(f"  summary: {entry.summary}")
 
+    header("3. Drafting via Claude API")
     if run.draft.refused:
-        print(f"\nModel refused (category={run.draft.refusal_category!r}) — no approval request submitted.")
+        print(f"Model refused (category={run.draft.refusal_category!r}) — no approval request submitted.")
     else:
-        print(f"\nModel: {run.draft.model}")
-        print(f"Drafted response:\n{run.draft.response_text}\n")
+        step(f"Model: {run.draft.model}")
+        print(f"{run.draft.response_text}\n")
         print(f"Citations: {run.draft.citations}")
-        print(
-            f"\nSubmitted for approval: request id={run.approval_request.id}, "
-            f"status={run.approval_request.status}, stage={run.approval_request.current_stage}"
-        )
 
-    print(f"\nAgent audit chain verified: {audit_log.verify_chain().ok}")
+        header("4. Submitting for human approval")
+        print(
+            f"Request id={run.approval_request.id}, status={run.approval_request.status}, "
+            f"stage={run.approval_request.current_stage}"
+        )
+        print("Drafted only — never treated as final until a reviewer and approver sign off.")
+
+    header("5. Audit log chain verification")
+    print(f"Agent audit chain verified: {audit_log.verify_chain().ok}")
     print(f"Evidence audit chain verified: {evidence_audit_log.verify_chain().ok}")
 
     audit_log.close()
     approval_queue.close()
     evidence_audit_log.close()
+
+    header("Done")
+    print("The tie-out, the drafted response, and the approval submission all")
+    print("cite the evidence audit log's events rather than copying them —")
+    print("provenance stays traceable back to the source run.")
+    print()
 
 
 if __name__ == "__main__":
