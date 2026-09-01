@@ -136,6 +136,27 @@ class VatTransaction:
 
 
 @dataclass(frozen=True)
+class InternalControl:
+    """One row from the company's internal-controls register, as exported from a
+    GRC tool or a controls spreadsheet.
+
+    Carries just enough to triage a control against a regulatory requirement:
+    its id, a free-text description of what the control does, and an optional
+    grouping `category`. `description` and `category` are kept exactly as the
+    source gave them — tokenising and relevance-matching them is the agent's
+    job, not the connector's. `raw` keeps the original CSV row so a normalized
+    record can always be traced back to the exact line it came from.
+    """
+
+    source_system: str
+    source_capability: str  # always "internal_controls"
+    control_id: str
+    description: str
+    category: str            # "" when the source leaves it blank
+    raw: dict[str, str]
+
+
+@dataclass(frozen=True)
 class SourceDocument:
     """One binary source document (a scanned invoice, receipt, contract PDF)
     handed to an agent by a document connector.

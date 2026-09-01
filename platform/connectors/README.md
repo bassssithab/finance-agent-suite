@@ -136,6 +136,39 @@ transactions = connector.fetch_transactions()   # sorted by (date, transaction_i
 Like the other connectors it never writes to `platform/audit-log` — the calling
 agent records what it retrieved in its own `AuditEvent`.
 
+## `FileInternalControlConnector`
+
+Read-only stand-in for a real internal-controls-register export (a GRC tool or a
+controls spreadsheet), for agents that triage the company's controls against
+something — a regulatory requirement, an audit finding. It reads CSVs from a
+folder and returns `InternalControl` records (`source_capability` is always
+`"internal_controls"`).
+
+Expected CSV schema:
+
+```
+control_id,description,category
+```
+
+`category` is optional — blank/missing becomes `""`. `control_id` and
+`description` are required; a blank one raises `ConnectorParseError`. The
+connector reads `description` and `category` verbatim — tokenising and
+relevance-matching them is the agent's job.
+
+```python
+from connectors import FileInternalControlConnector
+
+connector = FileInternalControlConnector(
+    source_system="sample_co",
+    folder="./sample_data/internal_controls",
+)
+
+controls = connector.fetch_controls()   # sorted by control_id
+```
+
+Like the other connectors it never writes to `platform/audit-log` — the calling
+agent records what it retrieved in its own `AuditEvent`.
+
 ## `FileOpenInvoiceConnector`
 
 Read-only stand-in for a real accounts-receivable / AR sub-ledger export, for

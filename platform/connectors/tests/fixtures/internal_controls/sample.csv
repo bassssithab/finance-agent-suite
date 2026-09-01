@@ -1,0 +1,5 @@
+control_id,description,category
+CTL-002,Vendor contracts are reviewed by legal before signature,Vendor Management
+CTL-001,Privileged system access requires MFA and quarterly recertification,Access Management
+CTL-004,Production changes follow a documented change-management workflow with approval,Change Management
+CTL-003,Personal data at rest is encrypted using AES-256,Data Protection
