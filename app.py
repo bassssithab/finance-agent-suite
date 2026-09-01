@@ -25,6 +25,12 @@ functions, unmodified:
                            approvals, and cited deficiency narratives for the
                            flagged entries. Real Claude API calls (only when
                            there is a violation); same key.
+  * ar-collections-agent : run_ar_collections_analysis() — deterministic
+                           invoice aging (days overdue + bucket) with
+                           configurable dunning-flagging rules, and cited
+                           tone-escalating dunning-email drafts for the
+                           flagged invoices. Real Claude API calls (only when
+                           something is flagged); same key. No email is sent.
 
 Every run here uses throwaway in-memory audit-log / approval-queue stores,
 exactly like agents/vat-treatment-agent/manual_live_run.py — nothing is
@@ -53,6 +59,7 @@ for path in (
     ROOT / "agents" / "ap-agent",
     ROOT / "agents" / "close-agent",
     ROOT / "agents" / "controls-sox-agent",
+    ROOT / "agents" / "ar-collections-agent",
     PLATFORM / "connectors",
     PLATFORM / "approvals",
     PLATFORM / "audit-log",
@@ -63,6 +70,7 @@ for path in (
 
 from ap_agent import process_invoice  # noqa: E402
 from approvals import ApprovalQueue  # noqa: E402
+from ar_collections_agent import DunningPolicy, run_ar_collections_analysis  # noqa: E402
 from audit_log import AuditLogStore  # noqa: E402
 from close_agent import FlagThresholds, run_close_variance_analysis  # noqa: E402
 from connectors import ConnectorParseError, FileDocumentConnector  # noqa: E402
@@ -98,6 +106,13 @@ CLOSE_ACCOUNTING_POLICY_DOCS = _load_fixture_module(
 CONTROLS_POLICY_DOCS = _load_fixture_module(
     "controls_sox_agent_evals_fixtures", "controls-sox-agent"
 ).ALL_DOCUMENTS
+_AR_COLLECTIONS_FIXTURES = _load_fixture_module(
+    "ar_collections_agent_evals_fixtures", "ar-collections-agent"
+)
+AR_COLLECTIONS_POLICY_DOCS = _AR_COLLECTIONS_FIXTURES.ALL_DOCUMENTS
+# The date the committed sample books are designed around — default the view's
+# "as of date" to it so the sample-picker labels (31-60, 90+, …) hold exactly.
+AR_COLLECTIONS_AS_OF = _AR_COLLECTIONS_FIXTURES.AS_OF
 
 SAMPLE_DATA = ROOT / "sample_data"
 AP_INVOICE_DIR = ROOT / "agents" / "ap-agent" / "evals" / "fixtures" / "invoices"
@@ -123,6 +138,18 @@ CONTROLS_SAMPLE_BATCHES = {
     "preparer as 2nd approver": "sod_violations.csv",
     "Edge cases — entry exactly at threshold, unapproved entry, case/whitespace "
     "name match": "edge_cases.csv",
+}
+
+AR_INVOICES_DIR = (
+    ROOT / "agents" / "ar-collections-agent" / "evals" / "fixtures" / "open_invoices"
+)
+AR_SAMPLE_BOOKS = {
+    "Current book — every invoice current or 1-30 days (nothing flagged, no Claude call)":
+        "current_book.csv",
+    "Mixed aging — a 31-60 reminder, a 61-90 firm notice, and a repeat-offender "
+    "customer pulled in on a fresher invoice": "mixed_aging.csv",
+    "Severe delinquency — three 90+ formal notices from one customer (who also "
+    "trips the repeat rule), plus a 61-90 firm notice": "severe_delinquency.csv",
 }
 
 
@@ -1046,6 +1073,229 @@ def _render_controls_result(run, audit_log) -> None:
 
 
 # --------------------------------------------------------------------------
+# AR collections agent view
+# --------------------------------------------------------------------------
+def render_ar_collections() -> None:
+    st.header("AR Collections Agent")
+    st.write(
+        "Ages every open invoice in **deterministic** code (days overdue + "
+        "aging bucket), flags the invoices that warrant a collection action "
+        "against configurable rules, retrieves from `platform/knowledge` to "
+        "draft a dunning email for each flagged invoice **whose tone escalates "
+        "with how overdue it is** (gentle reminder → firm → formal), then "
+        "submits the whole report for human approval. `autonomy: draft_only` — "
+        "the agent never sends an email, and it never does the arithmetic."
+    )
+    st.caption(
+        "The collections-policy corpus is a **synthetic test fixture** "
+        "(\"Larenthia Trading Co\", the same fictional entity as the other "
+        "agents) — not a real collections policy. It exists to exercise "
+        "retrieval, citation, and the grounded-vs-ungrounded draft paths."
+    )
+
+    api_key = _get_api_key()
+    if not api_key:
+        _missing_key_warning(
+            "The AR collections agent makes a real Claude API call to draft "
+            "dunning emails (a book with nothing flagged makes no call),"
+        )
+
+    col_days, col_amt = st.columns(2)
+    min_days = col_days.number_input(
+        "Minimum days overdue — flag any invoice at or past this many days overdue",
+        min_value=1, value=31, step=1,
+    )
+    min_amt = col_amt.number_input(
+        "Minimum balance to chase ($) — skip smaller balances (0 = disabled)",
+        min_value=0, value=0, step=100,
+    )
+
+    flag_repeat = st.checkbox(
+        "Also flag repeat-offender customers — every overdue invoice of a "
+        "customer with several overdue invoices",
+        value=True,
+    )
+    repeat_min = st.number_input(
+        "…how many overdue invoices makes a customer a repeat offender",
+        min_value=2, value=2, step=1, disabled=not flag_repeat,
+    )
+
+    policy = DunningPolicy(
+        min_days_overdue=int(min_days),
+        flag_repeat_customers=flag_repeat,
+        repeat_customer_min_overdue_invoices=int(repeat_min),
+        min_amount=Decimal(str(min_amt)) if min_amt > 0 else None,
+    )
+
+    as_of_date = st.date_input("As of date — the aging is computed against this", value=AR_COLLECTIONS_AS_OF)
+
+    source = st.radio(
+        "Open invoices",
+        ["Use a committed sample book", "Upload my own open-invoices CSV"],
+        horizontal=True,
+    )
+
+    invoices_upload = None
+    if source == "Upload my own open-invoices CSV":
+        invoices_upload = st.file_uploader("Open-invoices CSV", type="csv")
+        st.caption(
+            "Schema: `invoice_id,customer,invoice_date,due_date,amount,currency,"
+            "last_payment_date` (`currency` and `last_payment_date` optional). "
+            "All invoices must share one currency."
+        )
+    else:
+        label = st.radio("Sample book", list(AR_SAMPLE_BOOKS), index=1)
+        sample_file = AR_SAMPLE_BOOKS[label]
+        st.caption(
+            "Sample books are fictional open invoices from the "
+            "ar-collections-agent eval suite "
+            "(`agents/ar-collections-agent/evals/fixtures/open_invoices/`) — not "
+            f"real receivables. They are built around an as-of date of "
+            f"{AR_COLLECTIONS_AS_OF.isoformat()}; change the date above and the "
+            "buckets shift accordingly."
+        )
+
+    if not st.button("Run aging + dunning drafts", type="primary", disabled=not api_key):
+        return
+
+    import anthropic
+
+    with tempfile.TemporaryDirectory() as tmp:
+        invoices_folder = Path(tmp) / "open_invoices"
+        invoices_folder.mkdir()
+
+        if source == "Upload my own open-invoices CSV":
+            if invoices_upload is None:
+                st.error("Upload an open-invoices CSV first.")
+                return
+            (invoices_folder / "upload.csv").write_bytes(invoices_upload.getvalue())
+        else:
+            (invoices_folder / sample_file).write_text(
+                (AR_INVOICES_DIR / sample_file).read_text()
+            )
+
+        kb = KnowledgeBase()
+        kb.ingest(AR_COLLECTIONS_POLICY_DOCS)
+        audit_log, approval_queue = new_stores()
+        client = anthropic.Anthropic(api_key=api_key)
+
+        try:
+            with st.spinner("Aging the invoices and drafting dunning emails via Claude…"):
+                run = run_ar_collections_analysis(
+                    source_system="demo_co",
+                    invoices_folder=invoices_folder,
+                    knowledge_base=kb,
+                    audit_log=audit_log,
+                    approval_queue=approval_queue,
+                    as_of_date=as_of_date,
+                    client=client,
+                    policy=policy,
+                )
+            _render_ar_collections_result(run, audit_log)
+        except anthropic.AnthropicError as exc:
+            st.error(f"Claude API call failed: {exc}")
+        except (ValueError, ConnectorParseError) as exc:
+            st.error(f"Could not run the analysis: {exc}")
+        finally:
+            audit_log.close()
+            approval_queue.close()
+
+
+def _render_ar_collections_result(run, audit_log) -> None:
+    report = run.report
+    summary = report.summary()
+
+    st.caption(
+        f"As of {report.as_of_date} · model `{report.model or '—'}` · draft for "
+        "a reviewer — no dunning email is sent"
+    )
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Open invoices", summary["invoice_count"])
+    c2.metric("Overdue", summary["overdue_count"])
+    c3.metric("Flagged", summary["flagged_count"])
+    c4.metric("Currency", report.currency)
+    c5, c6 = st.columns(2)
+    c5.metric("Total open", money(Decimal(summary["total_open"])))
+    c6.metric("Total overdue", money(Decimal(summary["total_overdue"])))
+
+    st.subheader("Aging buckets")
+    st.dataframe(
+        [
+            {
+                "bucket": bucket,
+                "invoices": v["count"],
+                "amount": money(Decimal(v["amount"])),
+            }
+            for bucket, v in summary["bucket_breakdown"].items()
+        ],
+        hide_index=True,
+    )
+    if summary["tone_breakdown"]:
+        st.write(
+            "Dunning tone of the flagged invoices: "
+            + ", ".join(
+                f"`{tone}` × {count}"
+                for tone, count in sorted(summary["tone_breakdown"].items())
+            )
+        )
+
+    st.subheader("Invoice aging")
+    st.dataframe(
+        [
+            {
+                "": "🚩" if ia.flagged else "",
+                "invoice": ia.invoice_id,
+                "customer": ia.customer,
+                "invoice date": ia.invoice_date,
+                "due date": ia.due_date,
+                "amount": money(ia.amount),
+                "days overdue": ia.days_overdue,
+                "bucket": ia.bucket,
+                "days since last payment": (
+                    "—" if ia.days_since_last_payment is None
+                    else ia.days_since_last_payment
+                ),
+                "tone tier": ia.tone_tier or "—",
+            }
+            for ia in report.invoice_agings
+        ],
+        hide_index=True,
+    )
+
+    st.subheader("Flagged invoices")
+    if report.flagged:
+        for ia in report.flagged:
+            st.markdown(
+                f"**{ia.customer} · {ia.invoice_id}** — {ia.bucket} · "
+                f"tone: `{ia.tone_tier}`"
+            )
+            for reason in ia.flag_reasons:
+                st.write(f"- {reason}")
+    else:
+        st.success(
+            "Nothing warranted a collection action — no dunning emails drafted."
+        )
+
+    st.subheader("Drafted dunning emails")
+    if report.drafts_skipped_reason:
+        st.info(f"Dunning drafts skipped: `{report.drafts_skipped_reason}`.")
+    else:
+        for d in report.drafts:
+            st.markdown(f"**{d.invoice_id}** · `{d.tone}`")
+            st.markdown(f"**Subject:** {d.subject}")
+            st.text(d.body)
+            if d.citations:
+                for citation in d.citations:
+                    st.write(f"- {citation}")
+            else:
+                st.caption("Ungrounded — no policy excerpt cited.")
+
+    _render_approval(run.approval_request)
+    _render_audit_log(audit_log)
+
+
+# --------------------------------------------------------------------------
 # app shell
 # --------------------------------------------------------------------------
 def main() -> None:
@@ -1062,6 +1312,7 @@ def main() -> None:
         "AP Invoice Agent": render_ap_invoice,
         "Close Agent (Variance Analysis)": render_close_variance,
         "Controls (SoD) Agent": render_controls_sod,
+        "AR Collections Agent": render_ar_collections,
     }
     agent = st.sidebar.radio("Agent", list(views))
     views[agent]()
