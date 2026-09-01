@@ -43,6 +43,12 @@ functions, unmodified:
                            high-sensitivity flagging, and a forecast narrative
                            that frames assumptions as assumptions. Always
                            makes a real Claude API call; same key.
+  * tax-compliance-agent : run_vat_provision() — deterministic period-end VAT
+                           provision (output VAT, input VAT, net payable /
+                           refundable) by treatment category, anomaly
+                           flagging, and a filing-support narrative that never
+                           claims the return is ready to file. Always makes a
+                           real Claude API call; same key.
 
 Every run here uses throwaway in-memory audit-log / approval-queue stores,
 exactly like agents/vat-treatment-agent/manual_live_run.py — nothing is
@@ -74,6 +80,7 @@ for path in (
     ROOT / "agents" / "ar-collections-agent",
     ROOT / "agents" / "expense-agent",
     ROOT / "agents" / "fpa-agent",
+    ROOT / "agents" / "tax-compliance-agent",
     PLATFORM / "connectors",
     PLATFORM / "approvals",
     PLATFORM / "audit-log",
@@ -93,6 +100,7 @@ from expense_agent import ExpensePolicy, check_receipt_policy_compliance  # noqa
 from fpa_agent import ForecastAssumptions, run_driver_based_forecast  # noqa: E402
 from knowledge import KnowledgeBase  # noqa: E402
 from reconciliation_agent import run_reconciliation  # noqa: E402
+from tax_compliance_agent import run_vat_provision  # noqa: E402
 from vat_treatment_agent import InvoiceLineItem, determine_vat_treatment  # noqa: E402
 
 from fixtures import ALL_DOCUMENTS  # noqa: E402  (agents/vat-treatment-agent/evals/fixtures.py)
@@ -136,6 +144,9 @@ EXPENSE_POLICY_DOCS = _EXPENSE_FIXTURES.ALL_DOCUMENTS
 EXPENSE_AS_OF = _EXPENSE_FIXTURES.AS_OF
 FPA_METHODOLOGY_DOCS = _load_fixture_module(
     "fpa_agent_evals_fixtures", "fpa-agent"
+).ALL_DOCUMENTS
+TAX_VAT_POLICY_DOCS = _load_fixture_module(
+    "tax_compliance_agent_evals_fixtures", "tax-compliance-agent"
 ).ALL_DOCUMENTS
 
 SAMPLE_DATA = ROOT / "sample_data"
@@ -189,6 +200,19 @@ EXPENSE_SAMPLE_RECEIPTS = {
 }
 
 FPA_ACTUALS_DIR = ROOT / "agents" / "fpa-agent" / "evals" / "fixtures" / "actuals"
+
+TAX_TXN_DIR = (
+    ROOT / "agents" / "tax-compliance-agent" / "evals" / "fixtures" / "transactions"
+)
+TAX_SAMPLE_PERIODS = {
+    "Normal payable — standard-rated sales & purchases, a zero-rated export, an "
+    "out-of-scope drop-ship (net payable $14,550.00, no anomalies)": "normal_payable.csv",
+    "Refundable period — a slow sales month against large standard-rated capex "
+    "(net refundable −$14,700.00 → net_refundable_position)": "refundable_period.csv",
+    "Data-quality issues — a standard-rated sale with no rate, a zero-rated sale "
+    "carrying a rate, a 'reduced-rated' treatment, a 'refund' type (4 anomalies; "
+    "2 transactions excluded from totals)": "data_quality_issues.csv",
+}
 
 
 # --------------------------------------------------------------------------
@@ -1815,6 +1839,225 @@ def _render_fpa_result(run, audit_log) -> None:
 
 
 # --------------------------------------------------------------------------
+# Tax compliance agent — VAT provision view
+# --------------------------------------------------------------------------
+def render_tax_compliance() -> None:
+    st.header("Tax Compliance Agent — VAT Provision")
+    st.write(
+        "Computes output VAT (VAT on sales) and input VAT (VAT on purchases) by "
+        "treatment category in **deterministic** code, nets them into the "
+        "period's payable or refundable position, flags anomalies worth scrutiny "
+        "(a net refund, an unrecognized VAT treatment, a treatment/rate "
+        "mismatch), retrieves from `platform/knowledge` to draft a filing-support "
+        "narrative, then submits the whole provision for human approval. The "
+        "model writes only the narrative; it never does the arithmetic and never "
+        "claims the return is ready to file. `autonomy: draft_only`."
+    )
+    st.caption(
+        "The VAT corpus is a **synthetic test fixture** describing the same "
+        "fictional jurisdiction (\"Larenthia\") the VAT Treatment agent "
+        "classifies against — four categories, a 15% standard rate — not real "
+        "VAT law. It exists to exercise retrieval, citation, and the "
+        "grounded-vs-ungrounded narrative paths."
+    )
+
+    api_key = _get_api_key()
+    if not api_key:
+        _missing_key_warning(
+            "The tax compliance agent always makes a real Claude API call to "
+            "draft the filing-support narrative,"
+        )
+
+    source = st.radio(
+        "Period transactions",
+        ["Use a committed sample period", "Upload my own transaction CSV"],
+        horizontal=True,
+    )
+
+    txn_upload = None
+    if source == "Upload my own transaction CSV":
+        txn_upload = st.file_uploader("VAT transaction CSV", type="csv")
+        st.caption(
+            "Schema: `transaction_id,date,transaction_type,amount,vat_treatment,"
+            "vat_rate,currency` (`vat_treatment`, `vat_rate` and `currency` "
+            "optional). `transaction_type` is `sale` or `purchase`; "
+            "`vat_treatment` is one of standard-rated / zero-rated / exempt / "
+            "out-of-scope; `vat_rate` applies only where standard-rated. All "
+            "rows must share one currency."
+        )
+    else:
+        label = st.radio("Sample period", list(TAX_SAMPLE_PERIODS), index=0)
+        sample_file = TAX_SAMPLE_PERIODS[label]
+        st.caption(
+            "Sample periods are fictional transactions from the "
+            "tax-compliance-agent eval suite "
+            "(`agents/tax-compliance-agent/evals/fixtures/transactions/`), "
+            "standard rate 0.15 — not real ledgers."
+        )
+
+    if not st.button("Run VAT provision", type="primary", disabled=not api_key):
+        return
+
+    import anthropic
+
+    kb = KnowledgeBase()
+    kb.ingest(TAX_VAT_POLICY_DOCS)
+    audit_log, approval_queue = new_stores()
+    client = anthropic.Anthropic(api_key=api_key)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        folder = Path(tmp) / "vat_transactions"
+        folder.mkdir()
+
+        if source == "Upload my own transaction CSV":
+            if txn_upload is None:
+                st.error("Upload a VAT transaction CSV first.")
+                return
+            (folder / "upload.csv").write_bytes(txn_upload.getvalue())
+        else:
+            (folder / sample_file).write_text((TAX_TXN_DIR / sample_file).read_text())
+
+        try:
+            with st.spinner("Computing the VAT provision and drafting filing support via Claude…"):
+                run = run_vat_provision(
+                    source_system="demo_co",
+                    transactions_folder=folder,
+                    knowledge_base=kb,
+                    audit_log=audit_log,
+                    approval_queue=approval_queue,
+                    client=client,
+                )
+            _render_tax_compliance_result(run, audit_log)
+        except anthropic.AnthropicError as exc:
+            st.error(f"Claude API call failed: {exc}")
+        except (ValueError, ConnectorParseError) as exc:
+            st.error(f"Could not run the provision: {exc}")
+        finally:
+            audit_log.close()
+            approval_queue.close()
+
+
+def _render_tax_compliance_result(run, audit_log) -> None:
+    report = run.report
+    summary = report.summary()
+
+    st.warning(
+        "**Filing support, not a filed return.** This is a draft provision for a "
+        "reviewer — not a VAT return, not a confirmation the figures are complete "
+        "or correct, and not tax advice. Whether the return can be filed is the "
+        "reviewer's decision and ultimately a qualified tax professional's."
+    )
+    st.caption(
+        f"Period {report.period_label} "
+        f"({report.date_range['from']} → {report.date_range['to']}) · "
+        f"{report.currency} · model `{report.model or '—'}`"
+    )
+
+    position = report.position
+    if position == "payable":
+        st.info(
+            f"**Net VAT position: PAYABLE {money(report.net_vat)}** — output VAT "
+            f"{money(report.output_vat_total)} less input VAT "
+            f"{money(report.input_vat_total)}."
+        )
+    elif position == "refundable":
+        st.warning(
+            f"**Net VAT position: REFUNDABLE {money(report.net_vat)}** — input VAT "
+            f"{money(report.input_vat_total)} exceeds output VAT "
+            f"{money(report.output_vat_total)}. A net refund is unusual for a "
+            "mostly standard-rated trader and warrants a second look."
+        )
+    else:
+        st.info("**Net VAT position: NIL** — output VAT equals input VAT.")
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Output VAT", money(report.output_vat_total))
+    c2.metric("Input VAT", money(report.input_vat_total))
+    c3.metric("Net VAT", money(report.net_vat))
+    c4.metric("Position", position)
+
+    st.subheader("By treatment category")
+    rows = []
+    for treatment, sides in report.by_treatment.items():
+        for side, cell in sides.items():
+            if cell["count"]:
+                rows.append(
+                    {
+                        "treatment": treatment,
+                        "side": side,
+                        "transactions": cell["count"],
+                        "net amount": money(cell["amount"]),
+                        "VAT": money(cell["vat"]),
+                    }
+                )
+    if rows:
+        st.dataframe(rows, hide_index=True)
+    else:
+        st.write("No recognised transactions.")
+
+    st.subheader("Anomalies")
+    if report.anomalies:
+        st.error(
+            f"**{len(report.anomalies)} anomal"
+            f"{'y' if len(report.anomalies) == 1 else 'ies'} flagged.** The "
+            "provision is still submitted for approval, carrying these flags; "
+            "each is for specialist review, not resolved here."
+        )
+        st.dataframe(
+            [
+                {
+                    "code": a.code,
+                    "transaction": a.transaction_id or "— (whole period)",
+                    "reason (deterministic)": a.detail,
+                }
+                for a in report.anomalies
+            ],
+            hide_index=True,
+        )
+        excluded = summary["transactions_excluded_from_totals"]
+        if excluded:
+            st.caption(
+                "Excluded from the VAT totals (could not be classified): "
+                f"{', '.join(excluded)} — the net position may be understated "
+                "until these are resolved."
+            )
+    else:
+        st.success("No anomalies — the deterministic checks found nothing to flag.")
+
+    st.subheader("Drafted filing-support narrative")
+    if report.narrative_skipped_reason:
+        st.info(f"Narrative skipped: `{report.narrative_skipped_reason}`.")
+    else:
+        n = report.narrative
+        st.markdown(n.position_summary)
+        if n.specialist_review_needed:
+            st.error(
+                "**Specialist review needed** — the narrative flags at least one "
+                "item for a qualified tax specialist before filing."
+            )
+        else:
+            st.caption(
+                "The narrative does not flag a specialist review as needed — the "
+                "reviewer still decides."
+            )
+        st.markdown("**Anomaly explanations:**")
+        if n.anomaly_explanations:
+            for item in n.anomaly_explanations:
+                st.write(f"- {item}")
+        else:
+            st.write("_No anomalies to explain._")
+        if n.citations:
+            st.markdown("**Citations:**")
+            for citation in n.citations:
+                st.write(f"- {citation}")
+        else:
+            st.caption("Ungrounded — no filing-guidance excerpt cited.")
+
+    _render_approval(run.approval_request)
+    _render_audit_log(audit_log)
+
+
+# --------------------------------------------------------------------------
 # app shell
 # --------------------------------------------------------------------------
 def main() -> None:
@@ -1834,6 +2077,7 @@ def main() -> None:
         "AR Collections Agent": render_ar_collections,
         "Expense Agent": render_expense,
         "FPA Agent (Forecast)": render_fpa,
+        "Tax Compliance Agent (VAT Provision)": render_tax_compliance,
     }
     agent = st.sidebar.radio("Agent", list(views))
     views[agent]()
