@@ -1,0 +1,20 @@
+name: regulatory-change-agent
+version: 0.1.0
+description: >
+  First-pass regulatory-change impact triage. Given a plain-text description of
+  one new or changed regulatory requirement and the company's internal-controls
+  register, it deterministically scores each control for keyword/category
+  overlap with the requirement, flags a likely gap when nothing appears to
+  address it, drafts a plain-English impact-assessment narrative that explains
+  which controls look relevant and why — and never concludes whether the
+  company is compliant — and submits the triage for human review. Qualified
+  legal/compliance review is required regardless of what the triage finds.
+autonomy: draft_only
+connectors:
+  - erp: read           # internal-controls register, via platform/connectors FileInternalControlConnector
+approval_rules:
+  external_effects: always_require_human
+knowledge_corpora:
+  - regulatory_guidance
+tasks:
+  - triage_regulatory_change

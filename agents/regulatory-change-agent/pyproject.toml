@@ -1,0 +1,13 @@
+[project]
+name = "regulatory-change-agent"
+version = "0.1.0"
+description = "Regulatory change: a first-pass keyword/category triage of one new regulatory requirement against the internal-controls register, flagging a likely gap where nothing appears to match, with a plain-English impact-assessment narrative that never concludes on compliance and routes everything to human review"
+requires-python = ">=3.11"
+# Own copy of the anthropic SDK, scoped to this agent's folder (CLAUDE.md rule
+# #5 — one agent per folder, shared logic only in platform/). This agent calls
+# the Claude API directly to draft the impact-assessment narrative, same as
+# agents/close-agent, agents/fpa-agent and agents/tax-compliance-agent.
+dependencies = ["anthropic>=0.40,<1"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]

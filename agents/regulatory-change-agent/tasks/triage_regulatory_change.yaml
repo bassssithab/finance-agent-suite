@@ -1,0 +1,38 @@
+name: triage_regulatory_change
+description: >
+  Given a plain-text description of one new or changed regulatory requirement and
+  a folder of internal-controls CSVs, deterministically score each control for
+  keyword/category overlap with the requirement (crude relevance match, not legal
+  reasoning), decide a coverage verdict (apparent_coverage / weak_coverage /
+  likely_gap) and flag a gap for review when coverage is absent or thin, draft a
+  cited impact-assessment narrative that explains the shortlisted controls and
+  any gap without concluding on compliance and grounded in platform/knowledge
+  regulatory guidance when available, and submit the triage report for human
+  review.
+inputs:
+  - source_system
+  - requirement_text        # free-text description of the new/changed requirement
+  - controls_folder         # folder of internal-controls CSVs (control_id,description,category)
+  - knowledge_base          # pre-ingested platform/knowledge.KnowledgeBase
+  - requirement_reference   # optional label/id for the requirement
+  - policy                  # regulatory_change_agent.TriagePolicy; default min_keyword_overlap=2, strong_overlap=4
+  - model                   # default claude-sonnet-5
+  - effort                  # default medium
+  - retrieval_top_k         # default 3
+  - preparer                # default "regulatory-change-agent"
+outputs:
+  - triage_report           # TriageReport: scored controls, surfaced shortlist, coverage verdict, gap flag, narrative; see regulatory_change_agent.models
+  - approval_request_id
+autonomy: draft_only
+connectors:
+  - erp: read (via platform/connectors FileInternalControlConnector)
+knowledge_corpora:
+  - regulatory_guidance
+audit_events:
+  - regulatory_change_received
+  - controls_retrieved
+  - impact_triaged                          # carries the coverage verdict, gap flag, flag reasons, and every surfaced control with its score + matched terms
+  - triage_context_retrieved                # grounded (bool), chunk ids, citations
+  - impact_assessment_drafted               # or impact_assessment_refused / impact_assessment_failed
+  - triage_report_generated
+  - "approval_submitted:change_triage"      # emitted by platform/approvals on submit

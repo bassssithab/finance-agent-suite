@@ -1,0 +1,11 @@
+control_id,description,category
+CTL-101,Privileged system access requires multi-factor authentication and is recertified quarterly by the control owner,Access Management
+CTL-102,New user access is granted through a documented request-and-approval workflow,Access Management
+CTL-103,Personal data at rest is encrypted using an industry-standard algorithm,Data Protection
+CTL-104,Personal data records are catalogued in a data inventory maintained by the privacy team,Data Protection
+CTL-105,Financial statements are reviewed and signed off by the controller before publication,Financial Reporting
+CTL-106,Journal entries above a defined threshold require a second independent approver,Financial Reporting
+CTL-107,Vendor contracts are reviewed by legal before signature and reassessed annually,Vendor Management
+CTL-108,Production changes follow a documented change-management workflow with testing and approval,Change Management
+CTL-109,Security incidents are logged and investigated by the incident response team,Incident Response
+CTL-110,Employees complete annual security-awareness training,Training
