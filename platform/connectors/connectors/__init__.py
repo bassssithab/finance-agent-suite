@@ -9,7 +9,15 @@ from .document_connector import (
 from .file_connector import FileConnector
 from .journal_entry_connector import FileJournalEntryConnector, JournalEntryConnector
 from .open_invoice_connector import FileOpenInvoiceConnector, OpenInvoiceConnector
-from .models import BudgetActualLine, JournalEntry, OpenInvoice, SourceDocument, Transaction
+from .vat_transaction_connector import FileVatTransactionConnector, VatTransactionConnector
+from .models import (
+    BudgetActualLine,
+    JournalEntry,
+    OpenInvoice,
+    SourceDocument,
+    Transaction,
+    VatTransaction,
+)
 
 __all__ = [
     "BudgetActualConnector",
@@ -22,12 +30,15 @@ __all__ = [
     "FileConnector",
     "FileJournalEntryConnector",
     "FileOpenInvoiceConnector",
+    "FileVatTransactionConnector",
     "JournalEntry",
     "JournalEntryConnector",
     "OpenInvoice",
     "OpenInvoiceConnector",
     "SourceDocument",
     "Transaction",
+    "VatTransaction",
+    "VatTransactionConnector",
     "UnknownDocumentError",
     "UnsupportedMediaTypeError",
 ]

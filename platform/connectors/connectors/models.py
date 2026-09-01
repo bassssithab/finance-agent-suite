@@ -105,6 +105,37 @@ class JournalEntry:
 
 
 @dataclass(frozen=True)
+class VatTransaction:
+    """One normalized transaction line from a period's VAT transaction export.
+
+    Carries just enough to build a period-end VAT provision: whether it is a
+    sale or a purchase, the net amount, the VAT treatment the source recorded
+    for it, and the VAT rate where one applies. `transaction_type` and
+    `vat_treatment` are kept exactly as the source gave them (lower-casing,
+    canonicalisation and validation against the recognised categories are the
+    agent's job, not the connector's — same stance as `JournalEntry`'s
+    approver fields).
+
+    `vat_rate` is `None` when the source leaves it blank — deliberately distinct
+    from `Decimal("0")`, so the agent can tell "no rate recorded" (a possible
+    data-quality problem on a standard-rated line) apart from "zero-rated". `raw`
+    keeps the original CSV row so a normalized record can always be traced back
+    to the exact line it came from.
+    """
+
+    source_system: str
+    source_capability: str  # always "vat_transactions"
+    transaction_id: str
+    date: date
+    transaction_type: str   # as given, e.g. "sale" / "purchase"
+    amount: Decimal         # net amount as reported by the source
+    vat_treatment: str      # as given; "" when the source leaves it blank
+    vat_rate: Optional[Decimal]  # None when blank; distinct from Decimal("0")
+    currency: str
+    raw: dict[str, str]
+
+
+@dataclass(frozen=True)
 class SourceDocument:
     """One binary source document (a scanned invoice, receipt, contract PDF)
     handed to an agent by a document connector.

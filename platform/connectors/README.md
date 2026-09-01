@@ -100,6 +100,42 @@ lines = connector.fetch_lines(period="2026-07")   # exact-match period filter
 Like the other connectors it never writes to `platform/audit-log` — the calling
 agent records what it retrieved in its own `AuditEvent`.
 
+## `FileVatTransactionConnector`
+
+Read-only stand-in for a real VAT transaction / tax-report export, for agents
+that build a period-end VAT provision from a period's sale and purchase lines.
+It reads CSVs from a folder and returns `VatTransaction` records
+(`source_capability` is always `"vat_transactions"`).
+
+Expected CSV schema:
+
+```
+transaction_id,date,transaction_type,amount,vat_treatment,vat_rate,currency
+```
+
+`vat_treatment`, `vat_rate` and `currency` are optional — blank/missing
+`vat_treatment` becomes `""`, blank/missing `vat_rate` becomes `None`
+(deliberately distinct from `Decimal("0")` — so an agent can tell "no rate
+recorded" from "zero-rated"), blank/missing `currency` becomes `"USD"`.
+`transaction_id`, `date`, `transaction_type` and `amount` are required; a blank
+one raises `ConnectorParseError`. The connector does **not** validate the
+`transaction_type` or `vat_treatment` values — recognising the categories is the
+agent's job.
+
+```python
+from connectors import FileVatTransactionConnector
+
+connector = FileVatTransactionConnector(
+    source_system="sample_co",
+    folder="./sample_data/vat_transactions",
+)
+
+transactions = connector.fetch_transactions()   # sorted by (date, transaction_id)
+```
+
+Like the other connectors it never writes to `platform/audit-log` — the calling
+agent records what it retrieved in its own `AuditEvent`.
+
 ## `FileOpenInvoiceConnector`
 
 Read-only stand-in for a real accounts-receivable / AR sub-ledger export, for
