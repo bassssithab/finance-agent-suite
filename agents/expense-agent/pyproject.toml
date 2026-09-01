@@ -1,0 +1,16 @@
+[project]
+name = "expense-agent"
+version = "0.1.0"
+description = "Travel & expense: extracts a receipt image via Claude vision, deterministically checks it against a configurable expense policy (category limits, receipt age, required fields), drafts a cited explanation of any violation from platform/knowledge, and routes everything to human approval"
+requires-python = ">=3.11"
+# Own copy of the anthropic SDK, scoped to this agent's folder (CLAUDE.md rule
+# #5 — one agent per folder, shared logic only in platform/). This agent calls
+# the Claude API directly for vision extraction and policy-explanation drafts,
+# same as agents/ap-agent and agents/vat-treatment-agent.
+dependencies = ["anthropic>=0.40,<1"]
+
+[project.optional-dependencies]
+# Pillow is used ONLY by evals/generate_sample_receipts.py to (re)generate the
+# committed sample-receipt PNG fixtures. It is not imported at runtime or by the
+# test suite — the tests read the committed .png / .expected.json files.
+dev = ["pytest>=8", "pillow>=10"]

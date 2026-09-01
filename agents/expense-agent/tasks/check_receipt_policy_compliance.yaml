@@ -1,0 +1,33 @@
+name: check_receipt_policy_compliance
+description: >
+  Fetch a receipt image through a document connector, extract its structured
+  fields via Claude vision (forced record_receipt tool call), run a deterministic
+  check against a configurable ExpensePolicy (per-category spending limits,
+  maximum receipt age in days, required-fields-present), optionally draft a cited
+  explanation of which policy rule each flagged violation breaches from
+  platform/knowledge expense-policy chunks, and submit the extracted expense plus
+  the compliance result for human approval.
+inputs:
+  - document_id          # filename within the DocumentConnector's source
+  - document_connector   # platform/connectors.DocumentConnector (read-only); reuses ap-agent's FileDocumentConnector
+  - knowledge_base       # pre-ingested platform/knowledge.KnowledgeBase
+  - policy               # expense_agent.ExpensePolicy; default: no limits, no max age, standard required fields
+  - as_of_date           # date the receipt-age check runs against; default today
+  - model                # default claude-sonnet-5
+  - effort               # default medium
+  - retrieval_top_k      # default 3 (chunks retrieved per violation)
+  - preparer             # default "expense-agent"
+outputs:
+  - expense_draft        # ExpenseDraft: extracted receipt, compliance result, compliance_flagged, explanations; see expense_agent.models
+  - approval_request_id  # null if extraction refused or its output could not be parsed
+autonomy: draft_only
+connectors:
+  - documents: read
+knowledge_corpora:
+  - expense_policy
+audit_events:
+  - receipt_document_received
+  - receipt_extracted                 # or receipt_extraction_failed
+  - compliance_check_completed        # always — carries compliance_flagged + every violation with its deterministic reason
+  - policy_explanation_drafted        # or policy_explanation_skipped (no violations / no relevant knowledge) / policy_explanation_failed
+  - "approval_submitted:expense_policy_check"   # emitted by platform/approvals on submit

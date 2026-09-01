@@ -1,0 +1,19 @@
+name: expense-agent
+version: 0.1.0
+description: >
+  Travel-and-expense receipt policy compliance. Extracts a photographed/scanned
+  receipt via Claude vision (vendor, date, amount, currency, best-guess expense
+  category), deterministically checks it against a configurable ExpensePolicy
+  (per-category spending limits, maximum receipt age, required fields present),
+  drafts a cited explanation of which policy rule any flagged item breaches
+  (grounded in platform/knowledge expense policy when available), and submits the
+  extracted expense plus the compliance result for human review.
+autonomy: draft_only
+connectors:
+  - documents: read
+approval_rules:
+  external_effects: always_require_human
+knowledge_corpora:
+  - expense_policy
+tasks:
+  - check_receipt_policy_compliance
