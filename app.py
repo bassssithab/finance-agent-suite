@@ -49,6 +49,13 @@ functions, unmodified:
                            flagging, and a filing-support narrative that never
                            claims the return is ready to file. Always makes a
                            real Claude API call; same key.
+  * regulatory-change-agent : run_change_triage() — deterministic
+                           keyword/category overlap of one plain-text
+                           regulatory requirement against the internal-controls
+                           register, a coverage verdict + gap flag, and an
+                           impact-assessment narrative that never concludes on
+                           compliance. Always makes a real Claude API call;
+                           same key.
 
 Every run here uses throwaway in-memory audit-log / approval-queue stores,
 exactly like agents/vat-treatment-agent/manual_live_run.py — nothing is
@@ -81,6 +88,7 @@ for path in (
     ROOT / "agents" / "expense-agent",
     ROOT / "agents" / "fpa-agent",
     ROOT / "agents" / "tax-compliance-agent",
+    ROOT / "agents" / "regulatory-change-agent",
     PLATFORM / "connectors",
     PLATFORM / "approvals",
     PLATFORM / "audit-log",
@@ -100,6 +108,7 @@ from expense_agent import ExpensePolicy, check_receipt_policy_compliance  # noqa
 from fpa_agent import ForecastAssumptions, run_driver_based_forecast  # noqa: E402
 from knowledge import KnowledgeBase  # noqa: E402
 from reconciliation_agent import run_reconciliation  # noqa: E402
+from regulatory_change_agent import TriagePolicy, run_change_triage  # noqa: E402
 from tax_compliance_agent import run_vat_provision  # noqa: E402
 from vat_treatment_agent import InvoiceLineItem, determine_vat_treatment  # noqa: E402
 
@@ -148,6 +157,11 @@ FPA_METHODOLOGY_DOCS = _load_fixture_module(
 TAX_VAT_POLICY_DOCS = _load_fixture_module(
     "tax_compliance_agent_evals_fixtures", "tax-compliance-agent"
 ).ALL_DOCUMENTS
+_REGCHANGE_FIXTURES = _load_fixture_module(
+    "regulatory_change_agent_evals_fixtures", "regulatory-change-agent"
+)
+REGCHANGE_GUIDANCE_DOCS = _REGCHANGE_FIXTURES.ALL_DOCUMENTS
+REGCHANGE_SCENARIOS = _REGCHANGE_FIXTURES.SCENARIOS
 
 SAMPLE_DATA = ROOT / "sample_data"
 AP_INVOICE_DIR = ROOT / "agents" / "ap-agent" / "evals" / "fixtures" / "invoices"
@@ -200,6 +214,18 @@ EXPENSE_SAMPLE_RECEIPTS = {
 }
 
 FPA_ACTUALS_DIR = ROOT / "agents" / "fpa-agent" / "evals" / "fixtures" / "actuals"
+
+REGCHANGE_CONTROLS_DIR = (
+    ROOT / "agents" / "regulatory-change-agent" / "evals" / "fixtures" / "controls"
+)
+REGCHANGE_SAMPLE_SCENARIOS = {
+    "clear_match — privileged access must require MFA + quarterly recert "
+    "(an existing control overlaps strongly -> apparent_coverage)": "clear_match",
+    "genuine_gap — notify the supervisory authority of a security breach within 72h "
+    "(no control matches -> likely_gap)": "genuine_gap",
+    "ambiguous — documented data-retention schedules + periodic disposal "
+    "(surface overlap on 'data/records' only -> weak_coverage)": "ambiguous",
+}
 
 TAX_TXN_DIR = (
     ROOT / "agents" / "tax-compliance-agent" / "evals" / "fixtures" / "transactions"
@@ -2058,6 +2084,243 @@ def _render_tax_compliance_result(run, audit_log) -> None:
 
 
 # --------------------------------------------------------------------------
+# Regulatory change agent — triage view
+# --------------------------------------------------------------------------
+def render_regulatory_change() -> None:
+    st.header("Regulatory Change Agent — Impact Triage")
+    st.write(
+        "Scores every internal control for **keyword/category overlap** with a "
+        "plain-text regulatory requirement in deterministic code, decides a "
+        "coverage verdict and flags a likely gap when nothing appears to "
+        "address it, retrieves from `platform/knowledge` to draft an "
+        "impact-assessment narrative, then submits the triage for human review. "
+        "The model writes only the narrative; it never re-scores and never "
+        "concludes on compliance. `autonomy: draft_only`."
+    )
+    st.caption(
+        "The regulatory-guidance corpus and the controls register are "
+        "**synthetic test fixtures** (\"Larenthia Trading Co\") — not real "
+        "regulation or a real controls inventory. They exist to exercise the "
+        "keyword match, retrieval, and the grounded-vs-ungrounded narrative "
+        "paths."
+    )
+
+    api_key = _get_api_key()
+    if not api_key:
+        _missing_key_warning(
+            "The regulatory change agent always makes a real Claude API call to "
+            "draft the impact-assessment narrative,"
+        )
+
+    col_min, col_strong, col_max = st.columns(3)
+    min_overlap = col_min.number_input(
+        "Minimum keyword overlap — a control needs at least this many shared key terms",
+        min_value=1, value=2, step=1,
+    )
+    strong_overlap = col_strong.number_input(
+        "Solid-match threshold (key terms) — at/above this a match counts as solid",
+        min_value=1, value=4, step=1,
+    )
+    max_surfaced = col_max.number_input(
+        "Max controls surfaced", min_value=1, value=8, step=1,
+    )
+    policy = TriagePolicy(
+        min_keyword_overlap=int(min_overlap),
+        strong_overlap=int(strong_overlap),
+        max_controls_surfaced=int(max_surfaced),
+    )
+
+    req_source = st.radio(
+        "Regulatory requirement",
+        ["Use a committed sample scenario", "Type my own"],
+        horizontal=True,
+    )
+
+    requirement_text = ""
+    requirement_reference = ""
+    if req_source == "Type my own":
+        requirement_text = st.text_area(
+            "Regulatory requirement (plain text)",
+            height=120,
+            placeholder="e.g. Records containing personal data must be retained only as "
+            "long as necessary, with documented retention schedules…",
+        )
+        requirement_reference = st.text_input("Reference / ID (optional)")
+    else:
+        label = st.radio("Sample scenario", list(REGCHANGE_SAMPLE_SCENARIOS), index=0)
+        scenario = REGCHANGE_SCENARIOS[REGCHANGE_SAMPLE_SCENARIOS[label]]
+        requirement_text = scenario["requirement_text"]
+        requirement_reference = scenario["requirement_reference"]
+        st.info(requirement_text)
+        st.caption(
+            f"Reference {requirement_reference} · designed to land on "
+            f"`{scenario['expected_verdict']}` against the sample register."
+        )
+
+    ctl_source = st.radio(
+        "Internal controls",
+        ["Use the committed sample register", "Upload my own controls CSV"],
+        horizontal=True,
+    )
+
+    controls_upload = None
+    if ctl_source == "Upload my own controls CSV":
+        controls_upload = st.file_uploader("Internal-controls CSV", type="csv")
+        st.caption("Schema: `control_id,description,category` (`category` optional).")
+    else:
+        st.caption(
+            "The committed sample is ten fictional controls from the "
+            "regulatory-change-agent eval suite "
+            "(`agents/regulatory-change-agent/evals/fixtures/controls/`) across "
+            "Access Management, Data Protection, Financial Reporting and more."
+        )
+
+    if not st.button("Run triage", type="primary", disabled=not api_key):
+        return
+
+    if req_source == "Type my own" and not requirement_text.strip():
+        st.error("Enter a regulatory requirement first.")
+        return
+    if ctl_source == "Upload my own controls CSV" and controls_upload is None:
+        st.error("Upload an internal-controls CSV first.")
+        return
+
+    import anthropic
+
+    kb = KnowledgeBase()
+    kb.ingest(REGCHANGE_GUIDANCE_DOCS)
+    audit_log, approval_queue = new_stores()
+    client = anthropic.Anthropic(api_key=api_key)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        if ctl_source == "Upload my own controls CSV":
+            controls_folder = Path(tmp) / "controls"
+            controls_folder.mkdir()
+            (controls_folder / "upload.csv").write_bytes(controls_upload.getvalue())
+        else:
+            controls_folder = REGCHANGE_CONTROLS_DIR
+
+        try:
+            with st.spinner("Triaging the requirement against the controls register via Claude…"):
+                run = run_change_triage(
+                    source_system="demo_co",
+                    requirement_text=requirement_text,
+                    controls_folder=controls_folder,
+                    knowledge_base=kb,
+                    audit_log=audit_log,
+                    approval_queue=approval_queue,
+                    requirement_reference=requirement_reference or None,
+                    policy=policy,
+                    client=client,
+                )
+            _render_regulatory_change_result(run, audit_log)
+        except anthropic.AnthropicError as exc:
+            st.error(f"Claude API call failed: {exc}")
+        except (ValueError, ConnectorParseError) as exc:
+            st.error(f"Could not run the triage: {exc}")
+        finally:
+            audit_log.close()
+            approval_queue.close()
+
+
+def _render_regulatory_change_result(run, audit_log) -> None:
+    report = run.report
+    summary = report.summary()
+
+    st.warning(
+        "**First-pass triage, not a compliance determination.** This is a "
+        "keyword/category overlap computed by simple code — not legal analysis. "
+        "A keyword match does not mean a control satisfies the requirement, and "
+        "no match does not prove a gap. Whatever this shows, a qualified legal "
+        "and/or compliance professional must review it."
+    )
+    st.caption(
+        f"Requirement {report.requirement_reference or '(no reference)'} · "
+        f"{report.control_count} controls scanned · model `{report.model or '—'}`"
+    )
+    st.markdown(f"> {report.requirement_text}")
+
+    verdict = report.coverage_verdict
+    if verdict == "apparent_coverage":
+        st.info(
+            "**Coverage verdict: APPARENT COVERAGE** — at least one existing "
+            "control overlaps the requirement strongly on keywords. This is not "
+            "confirmation it is addressed; the reviewer must check."
+        )
+    elif verdict == "weak_coverage":
+        st.warning(
+            "**Coverage verdict: WEAK COVERAGE** — controls overlap the "
+            "requirement but only weakly. Coverage may be thin; flagged for the "
+            "reviewer."
+        )
+    else:
+        st.error(
+            "**Coverage verdict: LIKELY GAP** — no existing control shares "
+            "enough key terms with the requirement. Flagged for the compliance "
+            "owner to assess; the triage does not confirm a gap exists."
+        )
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Verdict", verdict.replace("_", " "))
+    c2.metric("Controls scanned", report.control_count)
+    c3.metric("Surfaced", summary["relevant_control_count"])
+    c4.metric("Gap flagged", "yes" if report.gap_flagged else "no")
+
+    if report.flag_reasons:
+        st.markdown("**Flag reasons:**")
+        for reason in report.flag_reasons:
+            st.write(f"- {reason}")
+
+    st.subheader("Surfaced controls")
+    if report.relevant_controls:
+        st.dataframe(
+            [
+                {
+                    "control_id": cr.control_id,
+                    "category": cr.category or "—",
+                    "score": cr.score,
+                    "matched terms": ", ".join(cr.matched_terms),
+                    "category match": "yes" if cr.category_match else "no",
+                }
+                for cr in report.relevant_controls
+            ],
+            hide_index=True,
+        )
+        st.caption(
+            "Shortlisted by keyword overlap — appearing relevant is not the same "
+            "as addressing the requirement."
+        )
+    else:
+        st.write("No control was surfaced as apparently relevant.")
+
+    st.subheader("Drafted impact assessment")
+    if report.narrative_skipped_reason:
+        st.info(f"Assessment skipped: `{report.narrative_skipped_reason}`.")
+    else:
+        n = report.narrative
+        st.markdown(n.assessment)
+        st.error(f"**Legal / compliance review required:** {n.review_required_statement}")
+        st.markdown("**Per-control explanations:**")
+        if n.relevant_controls_explained:
+            for e in n.relevant_controls_explained:
+                st.markdown(f"**{e['control_id']}** — {e['explanation']}")
+        else:
+            st.write("_No control was surfaced._")
+        if n.gap_explanation:
+            st.markdown("**Gap explanation:**")
+            st.write(n.gap_explanation)
+        if n.citations:
+            st.markdown("**Citations:**")
+            for citation in n.citations:
+                st.write(f"- {citation}")
+        else:
+            st.caption("Ungrounded — no guidance excerpt cited.")
+
+    _render_approval(run.approval_request)
+    _render_audit_log(audit_log)
+
+
+# --------------------------------------------------------------------------
 # app shell
 # --------------------------------------------------------------------------
 def main() -> None:
@@ -2078,6 +2341,7 @@ def main() -> None:
         "Expense Agent": render_expense,
         "FPA Agent (Forecast)": render_fpa,
         "Tax Compliance Agent (VAT Provision)": render_tax_compliance,
+        "Regulatory Change Agent (Triage)": render_regulatory_change,
     }
     agent = st.sidebar.radio("Agent", list(views))
     views[agent]()
