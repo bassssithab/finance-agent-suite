@@ -31,6 +31,12 @@ functions, unmodified:
                            tone-escalating dunning-email drafts for the
                            flagged invoices. Real Claude API calls (only when
                            something is flagged); same key. No email is sent.
+  * expense-agent        : check_receipt_policy_compliance() — vision
+                           extraction of a receipt image, a deterministic
+                           check against a configurable ExpensePolicy
+                           (category limits, receipt age, required fields),
+                           and a cited explanation of any violation. Real
+                           Claude API calls; same key.
 
 Every run here uses throwaway in-memory audit-log / approval-queue stores,
 exactly like agents/vat-treatment-agent/manual_live_run.py — nothing is
@@ -60,6 +66,7 @@ for path in (
     ROOT / "agents" / "close-agent",
     ROOT / "agents" / "controls-sox-agent",
     ROOT / "agents" / "ar-collections-agent",
+    ROOT / "agents" / "expense-agent",
     PLATFORM / "connectors",
     PLATFORM / "approvals",
     PLATFORM / "audit-log",
@@ -75,6 +82,7 @@ from audit_log import AuditLogStore  # noqa: E402
 from close_agent import FlagThresholds, run_close_variance_analysis  # noqa: E402
 from connectors import ConnectorParseError, FileDocumentConnector  # noqa: E402
 from controls_sox_agent import ControlPolicy, run_journal_entry_control_test  # noqa: E402
+from expense_agent import ExpensePolicy, check_receipt_policy_compliance  # noqa: E402
 from knowledge import KnowledgeBase  # noqa: E402
 from reconciliation_agent import run_reconciliation  # noqa: E402
 from vat_treatment_agent import InvoiceLineItem, determine_vat_treatment  # noqa: E402
@@ -113,6 +121,11 @@ AR_COLLECTIONS_POLICY_DOCS = _AR_COLLECTIONS_FIXTURES.ALL_DOCUMENTS
 # The date the committed sample books are designed around — default the view's
 # "as of date" to it so the sample-picker labels (31-60, 90+, …) hold exactly.
 AR_COLLECTIONS_AS_OF = _AR_COLLECTIONS_FIXTURES.AS_OF
+_EXPENSE_FIXTURES = _load_fixture_module("expense_agent_evals_fixtures", "expense-agent")
+EXPENSE_POLICY_DOCS = _EXPENSE_FIXTURES.ALL_DOCUMENTS
+# The date the committed sample receipts are aged against — default the view's
+# "as of date" to it so the sample-picker labels ("~5 months old") hold.
+EXPENSE_AS_OF = _EXPENSE_FIXTURES.AS_OF
 
 SAMPLE_DATA = ROOT / "sample_data"
 AP_INVOICE_DIR = ROOT / "agents" / "ap-agent" / "evals" / "fixtures" / "invoices"
@@ -150,6 +163,18 @@ AR_SAMPLE_BOOKS = {
     "customer pulled in on a fresher invoice": "mixed_aging.csv",
     "Severe delinquency — three 90+ formal notices from one customer (who also "
     "trips the repeat rule), plus a 61-90 firm notice": "severe_delinquency.csv",
+}
+
+EXPENSE_RECEIPT_DIR = (
+    ROOT / "agents" / "expense-agent" / "evals" / "fixtures" / "receipts"
+)
+EXPENSE_SAMPLE_RECEIPTS = {
+    "Compliant taxi — $38.40 fare within the taxi cap, a few days old "
+    "(passes; no explanation call)": "compliant_taxi.png",
+    "Over-limit dinner — $182.50 meal, well over the $75 per-meal cap "
+    "(category_over_limit + cited explanation)": "over_limit_dinner.png",
+    "Stale hotel — $212 room within the lodging cap but ~5 months old "
+    "(receipt_too_old)": "stale_hotel.png",
 }
 
 
@@ -1296,6 +1321,217 @@ def _render_ar_collections_result(run, audit_log) -> None:
 
 
 # --------------------------------------------------------------------------
+# Expense agent view
+# --------------------------------------------------------------------------
+def render_expense() -> None:
+    st.header("Expense Agent")
+    st.write(
+        "Extracts a receipt image via Claude vision, runs a **deterministic** "
+        "check against a configurable expense policy in plain code — per-category "
+        "spending limits, a maximum receipt age, required fields present — "
+        "retrieves from `platform/knowledge` to draft a cited explanation of any "
+        "flagged violation, then submits the extracted expense plus the "
+        "compliance result for human approval. The model only transcribes and "
+        "infers a category — it never decides whether the expense is in policy. "
+        "`autonomy: draft_only`."
+    )
+    st.caption(
+        "The expense-policy corpus is a **synthetic test fixture** (\"Larenthia "
+        "Trading Co\", the same fictional entity as the other agents) — not a "
+        "real T&E policy. It exists to exercise retrieval, citation, and the "
+        "grounded-vs-ungrounded explanation paths."
+    )
+
+    api_key = _get_api_key()
+    if not api_key:
+        _missing_key_warning(
+            "The expense agent makes a real Claude API call to extract the "
+            "receipt (and, when something is flagged and policy is on file, to "
+            "explain it),"
+        )
+
+    col_m, col_t, col_l = st.columns(3)
+    meals_limit = col_m.number_input(
+        "Meals limit ($) — per receipt (0 = no meals cap)", min_value=0.0, value=75.0, step=5.0
+    )
+    travel_limit = col_t.number_input(
+        "Travel — taxi limit ($) (0 = no taxi cap)", min_value=0.0, value=60.0, step=5.0
+    )
+    lodging_limit = col_l.number_input(
+        "Lodging limit ($) (0 = no lodging cap)", min_value=0.0, value=250.0, step=10.0
+    )
+    max_age = st.number_input(
+        "Maximum receipt age (days) — flag receipts older than this (0 = disabled)",
+        min_value=0, value=90, step=1,
+    )
+    st.caption(
+        "The sample receipts carry the categories **Meals**, **Travel - taxi** "
+        "and **Lodging** (matched case-insensitively against the limits above)."
+    )
+
+    category_limits = {
+        key: Decimal(str(value))
+        for key, value in (
+            ("meals", meals_limit),
+            ("travel - taxi", travel_limit),
+            ("lodging", lodging_limit),
+        )
+        if value > 0
+    }
+    policy = ExpensePolicy(
+        category_limits=category_limits,
+        max_receipt_age_days=int(max_age) if max_age > 0 else None,
+    )
+
+    as_of_date = st.date_input(
+        "As of date — the receipt-age check runs against this", value=EXPENSE_AS_OF
+    )
+
+    source = st.radio(
+        "Receipt",
+        ["Use a committed sample receipt", "Upload a receipt image"],
+        horizontal=True,
+    )
+
+    document_bytes = None
+    document_id = None
+    if source == "Upload a receipt image":
+        upload = st.file_uploader("Receipt image", type=["png", "jpg", "jpeg"])
+        if upload is not None:
+            document_bytes = upload.getvalue()
+            document_id = "upload" + Path(upload.name).suffix.lower()
+    else:
+        label = st.radio("Sample receipt", list(EXPENSE_SAMPLE_RECEIPTS), index=0)
+        document_id = EXPENSE_SAMPLE_RECEIPTS[label]
+        st.caption(
+            "Sample receipts are fictional test fixtures generated by the eval "
+            "suite (`agents/expense-agent/evals/generate_sample_receipts.py`), "
+            f"each stamped \"SAMPLE — NOT A REAL RECEIPT\" and aged against "
+            f"{EXPENSE_AS_OF.isoformat()} — not real merchant documents."
+        )
+
+    if not st.button("Check receipt", type="primary", disabled=not api_key):
+        return
+
+    if source == "Upload a receipt image" and document_bytes is None:
+        st.error("Upload a PNG or JPEG receipt image first.")
+        return
+
+    import anthropic
+
+    kb = KnowledgeBase()
+    kb.ingest(EXPENSE_POLICY_DOCS)
+    audit_log, approval_queue = new_stores()
+    client = anthropic.Anthropic(api_key=api_key)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        if source == "Upload a receipt image":
+            folder = Path(tmp)
+            (folder / document_id).write_bytes(document_bytes)
+        else:
+            folder = EXPENSE_RECEIPT_DIR
+
+        connector = FileDocumentConnector(source_system="demo_co", folder=folder)
+
+        try:
+            with st.spinner("Extracting the receipt and checking it against policy via Claude…"):
+                run = check_receipt_policy_compliance(
+                    document_id=document_id,
+                    document_connector=connector,
+                    knowledge_base=kb,
+                    audit_log=audit_log,
+                    approval_queue=approval_queue,
+                    policy=policy,
+                    as_of_date=as_of_date,
+                    client=client,
+                )
+            _render_expense_result(run, audit_log)
+        except anthropic.AnthropicError as exc:
+            st.error(f"Claude API call failed: {exc}")
+        except (ValueError, ConnectorParseError) as exc:
+            st.error(f"Could not run the check: {exc}")
+        finally:
+            audit_log.close()
+            approval_queue.close()
+
+
+def _render_expense_result(run, audit_log) -> None:
+    if run.draft is None:
+        extraction = run.extraction
+        if extraction.refused:
+            st.error(
+                f"The model refused to extract the receipt (category: "
+                f"`{extraction.refusal_category}`). No approval request was submitted."
+            )
+        else:
+            st.error(
+                f"Extraction failed: {extraction.parse_error}. No approval "
+                "request was submitted."
+            )
+        _render_audit_log(audit_log)
+        return
+
+    draft = run.draft
+    r = draft.receipt
+
+    st.subheader("Extracted receipt")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Vendor", r.vendor or "—")
+    c2.metric("Date", r.date or "—")
+    c3.metric("Amount", f"{r.currency} {r.amount}".strip())
+    c4, c5, c6 = st.columns(3)
+    c4.metric("Currency", r.currency or "—")
+    c5.metric("Expense category", r.expense_category or "—")
+    c6.metric("Extraction confidence", f"{r.extraction_confidence:.2f}")
+    st.caption(
+        f"Model: `{draft.model}` · category is the model's inference · draft for "
+        "a reviewer, not a reimbursement decision"
+    )
+
+    st.subheader("Deterministic policy check")
+    c = draft.compliance
+    if draft.compliance_flagged:
+        st.error(
+            "**POLICY VIOLATION FLAGGED.** The draft is still submitted for "
+            "approval (the agent drafts; it doesn't get to block), carrying this flag."
+        )
+        st.dataframe(
+            [
+                {
+                    "code": v.code,
+                    "field": v.field,
+                    "detail (deterministic)": v.detail,
+                }
+                for v in c.violations
+            ],
+            hide_index=True,
+        )
+    else:
+        st.success("Within policy — the deterministic check found no violations.")
+    st.caption(
+        f"Receipt date parsed as {c.parsed_date or '—'} · limit applied "
+        f"{money(c.applied_limit) if c.applied_limit is not None else '—'} · "
+        f"checked as of {c.as_of_date}"
+    )
+
+    st.subheader("Drafted policy explanation")
+    if draft.explanation_skipped_reason:
+        st.info(f"Explanation skipped: `{draft.explanation_skipped_reason}`.")
+    else:
+        for e in draft.explanations:
+            st.markdown(f"**`{e.code}`**")
+            st.write(e.explanation)
+            if e.citations:
+                for citation in e.citations:
+                    st.write(f"- {citation}")
+            else:
+                st.caption("Ungrounded — no policy excerpt cited.")
+
+    _render_approval(run.approval_request)
+    _render_audit_log(audit_log)
+
+
+# --------------------------------------------------------------------------
 # app shell
 # --------------------------------------------------------------------------
 def main() -> None:
@@ -1313,6 +1549,7 @@ def main() -> None:
         "Close Agent (Variance Analysis)": render_close_variance,
         "Controls (SoD) Agent": render_controls_sod,
         "AR Collections Agent": render_ar_collections,
+        "Expense Agent": render_expense,
     }
     agent = st.sidebar.radio("Agent", list(views))
     views[agent]()
