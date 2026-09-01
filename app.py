@@ -56,6 +56,17 @@ functions, unmodified:
                            impact-assessment narrative that never concludes on
                            compliance. Always makes a real Claude API call;
                            same key.
+  * technical-accounting-agent : answer_question() — retrieval from
+                           platform/knowledge + a cited plain-English
+                           GAAP/IFRS answer drafted strictly from the
+                           retrieved chunks. Real Claude API call; same key.
+  * audit-readiness-agent : respond_to_pbc_item() — FLAGSHIP. This view runs a
+                           real reconciliation-agent run over sample_data
+                           first, gets it signed off, then ties an auditor's
+                           PBC request to that run's audit log and drafts a
+                           cited response citing its audit-event ids. Real
+                           Claude API call; same key. Shows cross-agent reuse:
+                           one agent's audit trail is another agent's evidence.
 
 Every run here uses throwaway in-memory audit-log / approval-queue stores,
 exactly like agents/vat-treatment-agent/manual_live_run.py — nothing is
@@ -67,6 +78,7 @@ Run:  streamlit run app.py
 import importlib.util
 import sys
 import tempfile
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 
@@ -89,6 +101,8 @@ for path in (
     ROOT / "agents" / "fpa-agent",
     ROOT / "agents" / "tax-compliance-agent",
     ROOT / "agents" / "regulatory-change-agent",
+    ROOT / "agents" / "technical-accounting-agent",
+    ROOT / "agents" / "audit-readiness-agent",
     PLATFORM / "connectors",
     PLATFORM / "approvals",
     PLATFORM / "audit-log",
@@ -98,8 +112,9 @@ for path in (
         sys.path.insert(0, str(path))
 
 from ap_agent import process_invoice  # noqa: E402
-from approvals import ApprovalQueue  # noqa: E402
+from approvals import ApprovalQueue, Decision, Role  # noqa: E402
 from ar_collections_agent import DunningPolicy, run_ar_collections_analysis  # noqa: E402
+from audit_readiness_agent import PBCItem, respond_to_pbc_item  # noqa: E402
 from audit_log import AuditLogStore  # noqa: E402
 from close_agent import FlagThresholds, run_close_variance_analysis  # noqa: E402
 from connectors import ConnectorParseError, FileDocumentConnector  # noqa: E402
@@ -110,6 +125,7 @@ from knowledge import KnowledgeBase  # noqa: E402
 from reconciliation_agent import run_reconciliation  # noqa: E402
 from regulatory_change_agent import TriagePolicy, run_change_triage  # noqa: E402
 from tax_compliance_agent import run_vat_provision  # noqa: E402
+from technical_accounting_agent import answer_question  # noqa: E402
 from vat_treatment_agent import InvoiceLineItem, determine_vat_treatment  # noqa: E402
 
 from fixtures import ALL_DOCUMENTS  # noqa: E402  (agents/vat-treatment-agent/evals/fixtures.py)
@@ -162,6 +178,12 @@ _REGCHANGE_FIXTURES = _load_fixture_module(
 )
 REGCHANGE_GUIDANCE_DOCS = _REGCHANGE_FIXTURES.ALL_DOCUMENTS
 REGCHANGE_SCENARIOS = _REGCHANGE_FIXTURES.SCENARIOS
+TECHACCT_DOCS = _load_fixture_module(
+    "technical_accounting_agent_evals_fixtures", "technical-accounting-agent"
+).ALL_DOCUMENTS
+AUDITREADY_POLICY_DOCS = _load_fixture_module(
+    "audit_readiness_agent_evals_fixtures", "audit-readiness-agent"
+).ALL_DOCUMENTS
 
 SAMPLE_DATA = ROOT / "sample_data"
 AP_INVOICE_DIR = ROOT / "agents" / "ap-agent" / "evals" / "fixtures" / "invoices"
@@ -2321,6 +2343,285 @@ def _render_regulatory_change_result(run, audit_log) -> None:
 
 
 # --------------------------------------------------------------------------
+# Technical accounting agent — GAAP/IFRS Q&A view
+# --------------------------------------------------------------------------
+def render_technical_accounting() -> None:
+    st.header("Technical Accounting Agent — GAAP/IFRS Q&A")
+    st.write(
+        "Retrieves the top chunks for a plain-English GAAP/IFRS question from "
+        "`platform/knowledge`, asks Claude to draft an answer **strictly from "
+        "those chunks** (citing each one relied on), and submits the draft for "
+        "human approval. Retrieval and citation bookkeeping are deterministic "
+        "code; the model only writes the answer's language. `autonomy: "
+        "draft_only`."
+    )
+    st.caption(
+        "The knowledge corpus is a **synthetic test fixture** — invented "
+        "placeholder prose (an internal-use-software capitalization standard "
+        "and a travel policy), not real ASC/IFRS text. It exists to exercise "
+        "retrieval, citation, and the \"context isn't enough → say so\" path."
+    )
+
+    api_key = _get_api_key()
+    if not api_key:
+        _missing_key_warning(
+            "The technical accounting agent makes a real Claude API call to "
+            "draft the answer,"
+        )
+
+    question = st.text_area(
+        "GAAP/IFRS question",
+        value="When can payroll costs for internal-use software development be capitalized?",
+        height=90,
+    )
+
+    if not st.button("Draft answer", type="primary", disabled=not api_key):
+        return
+
+    if not question.strip():
+        st.error("Enter a question first.")
+        return
+
+    import anthropic
+
+    kb = KnowledgeBase()
+    kb.ingest(TECHACCT_DOCS)
+    audit_log, approval_queue = new_stores()
+    client = anthropic.Anthropic(api_key=api_key)
+
+    try:
+        with st.spinner("Retrieving from platform/knowledge and drafting via Claude…"):
+            run = answer_question(
+                question=question,
+                knowledge_base=kb,
+                audit_log=audit_log,
+                approval_queue=approval_queue,
+                client=client,
+            )
+        _render_technical_accounting_result(run, audit_log)
+    except anthropic.AnthropicError as exc:
+        st.error(f"Claude API call failed: {exc}")
+    finally:
+        audit_log.close()
+        approval_queue.close()
+
+
+def _render_technical_accounting_result(run, audit_log) -> None:
+    draft = run.draft
+
+    if draft.refused:
+        st.error(
+            f"The model refused to answer (category: `{draft.refusal_category}`). "
+            "No approval request was submitted."
+        )
+        _render_audit_log(audit_log)
+        return
+
+    st.subheader("Drafted answer")
+    st.markdown(draft.answer_text)
+    st.caption(
+        f"Model: `{draft.model}` · grounded strictly in the retrieved chunks · "
+        "draft for a reviewer, not a final accounting determination"
+    )
+
+    st.subheader("Citations")
+    if draft.citations:
+        for citation in draft.citations:
+            st.write(f"- {citation}")
+    else:
+        st.write("_None cited — the model reported the context was not enough to answer._")
+
+    st.subheader("Retrieved knowledge chunks")
+    for event in audit_log.get_all():
+        if event.action == "chunks_retrieved":
+            for chunk in event.output["chunks"]:
+                st.write(f"- `[{chunk['score']:.3f}]` {chunk['citation']}")
+
+    _render_approval(run.approval_request)
+    _render_audit_log(audit_log)
+
+
+# --------------------------------------------------------------------------
+# Audit readiness agent — PBC response view (FLAGSHIP)
+# --------------------------------------------------------------------------
+def render_audit_readiness() -> None:
+    st.header("Audit Readiness Agent — PBC Response (Flagship)")
+    st.write(
+        "**The flagship — cross-agent reuse.** This view first runs a real "
+        "`reconciliation-agent` run over the committed `sample_data` and gets "
+        "it signed off, producing a genuine hash-chained **evidence** audit "
+        "log. It then ties an auditor's PBC (Prepared-By-Client) request to "
+        "that run — deterministically, on period and evidence type — and drafts "
+        "a plain-English response that **cites the evidence run's audit-event "
+        "ids**, never copies them. One agent's audit trail becomes another "
+        "agent's evidence. `autonomy: draft_only`."
+    )
+    st.caption(
+        "The bank-reconciliation policy corpus is a **synthetic test fixture** "
+        "(clearly-labelled placeholder text) — not a real policy. The "
+        "reconciliation runs over the committed `sample_data` (July 2026)."
+    )
+
+    api_key = _get_api_key()
+    if not api_key:
+        _missing_key_warning(
+            "The audit readiness agent makes a real Claude API call to draft "
+            "the PBC response,"
+        )
+
+    description = st.text_area(
+        "PBC request (the auditor's ask, plain text)",
+        value="Provide the July 2026 bank reconciliation with supporting evidence.",
+        height=90,
+    )
+    item_id = st.columns(2)[0].text_input("PBC item id", value="PBC-1")
+    st.caption(
+        "Period, evidence type and source are fixed to **July 2026 / "
+        "`bank_reconciliation` / `sample_co`** — the window the committed "
+        "`sample_data` covers. Tie-out matches on those structured fields, "
+        "never on the free-text description."
+    )
+
+    if not st.button("Run PBC response", type="primary", disabled=not api_key):
+        return
+
+    if not description.strip():
+        st.error("Enter a PBC request description first.")
+        return
+
+    import anthropic
+
+    evidence_audit_log = AuditLogStore(":memory:")
+    evidence_approval_queue = ApprovalQueue(":memory:", evidence_audit_log)
+    audit_log, approval_queue = new_stores()
+    client = anthropic.Anthropic(api_key=api_key)
+
+    try:
+        with st.spinner("Running a reconciliation over sample_data to build the evidence log…"):
+            recon_run = run_reconciliation(
+                source_system="sample_co",
+                bank_folder=SAMPLE_DATA / "bank",
+                ledger_folder=SAMPLE_DATA / "ledger",
+                audit_log=evidence_audit_log,
+                approval_queue=evidence_approval_queue,
+                start_date=date(2026, 7, 1),
+                end_date=date(2026, 7, 31),
+            )
+            evidence_approval_queue.decide(
+                recon_run.approval_request.id, actor="alice", role=Role.REVIEWER,
+                decision=Decision.APPROVE, timestamp=datetime.now(timezone.utc).isoformat(),
+            )
+            evidence_approval_queue.decide(
+                recon_run.approval_request.id, actor="bob", role=Role.APPROVER,
+                decision=Decision.APPROVE, timestamp=datetime.now(timezone.utc).isoformat(),
+            )
+
+        kb = KnowledgeBase()
+        kb.ingest(AUDITREADY_POLICY_DOCS)
+
+        pbc_item = PBCItem(
+            item_id=item_id.strip() or "PBC-1",
+            description=description,
+            period_start=date(2026, 7, 1),
+            period_end=date(2026, 7, 31),
+            evidence_type="bank_reconciliation",
+            source_system="sample_co",
+        )
+
+        with st.spinner("Tying out evidence and drafting the PBC response via Claude…"):
+            run = respond_to_pbc_item(
+                pbc_item=pbc_item,
+                evidence_audit_log=evidence_audit_log,
+                audit_log=audit_log,
+                approval_queue=approval_queue,
+                knowledge_base=kb,
+                client=client,
+            )
+        _render_audit_readiness_result(run, recon_run, audit_log, evidence_audit_log)
+    except anthropic.AnthropicError as exc:
+        st.error(f"Claude API call failed: {exc}")
+    finally:
+        audit_log.close()
+        approval_queue.close()
+        evidence_approval_queue.close()
+        evidence_audit_log.close()
+
+
+def _render_audit_readiness_result(run, recon_run, audit_log, evidence_audit_log) -> None:
+    st.info(
+        "**Flagship — cross-agent reuse.** The evidence below is a real "
+        "reconciliation-agent run this view just executed and got signed off. "
+        "The PBC response cites its audit-event ids; it never copies them into "
+        "this agent's own chain."
+    )
+
+    report = recon_run.report
+    exact = [p for p in report.matched if p.match_type == "exact"]
+    tolerance = [p for p in report.matched if p.match_type == "tolerance"]
+    st.subheader("Evidence: reconciliation-agent run (approved)")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Exact matches", len(exact))
+    c2.metric("Tolerance matches", len(tolerance))
+    c3.metric("Exceptions", len(report.exceptions))
+    c4.metric("Difference", money(report.difference))
+    st.caption(
+        f"{len(evidence_audit_log.get_all())} events in the evidence log · "
+        "reviewer + approver signed off"
+    )
+
+    st.subheader("Tie-out")
+    to = run.tie_out
+    if to.found:
+        entry = to.entries[0]
+        st.success(
+            f"Evidence found — tied out to reconciliation-agent audit events "
+            f"{entry.audit_event_ids}; approval status **{entry.approval_status}**."
+        )
+        st.json(entry.summary)
+        st.caption(f"Source: `{to.evidence_source_db_path}`")
+    else:
+        st.warning(
+            f"No evidence found — {to.gap_reason}. The response still goes "
+            "through approval so a human sees the open item."
+        )
+
+    st.subheader("Drafted PBC response")
+    if run.draft.refused:
+        st.error(
+            f"The model refused (category: `{run.draft.refusal_category}`). "
+            "No approval request was submitted."
+        )
+    else:
+        st.markdown(run.draft.response_text)
+        st.caption(
+            f"Model: `{run.draft.model}` · draft for a reviewer, not sent to an auditor"
+        )
+        st.markdown("**Citations:**")
+        if run.draft.citations:
+            for citation in run.draft.citations:
+                st.write(f"- {citation}")
+        else:
+            st.write("_None cited._")
+
+    if run.approval_request is not None:
+        _render_approval(run.approval_request)
+
+    _render_audit_log(audit_log)
+
+    st.subheader("Evidence audit log (reconciliation-agent)")
+    for e in evidence_audit_log.get_all():
+        st.write(f"- `{e.action}` (actor: {e.actor})")
+    ev = evidence_audit_log.verify_chain()
+    if ev.ok:
+        st.success("Evidence chain: verify_chain() → ok (hash chain intact)")
+    else:
+        st.error(
+            f"Evidence chain: verify_chain() → broken at record {ev.broken_record_id}: "
+            f"{ev.reason}"
+        )
+
+
+# --------------------------------------------------------------------------
 # app shell
 # --------------------------------------------------------------------------
 def main() -> None:
@@ -2342,6 +2643,8 @@ def main() -> None:
         "FPA Agent (Forecast)": render_fpa,
         "Tax Compliance Agent (VAT Provision)": render_tax_compliance,
         "Regulatory Change Agent (Triage)": render_regulatory_change,
+        "Technical Accounting Agent (GAAP/IFRS Q&A)": render_technical_accounting,
+        "Audit Readiness Agent (PBC Response) — Flagship": render_audit_readiness,
     }
     agent = st.sidebar.radio("Agent", list(views))
     views[agent]()
