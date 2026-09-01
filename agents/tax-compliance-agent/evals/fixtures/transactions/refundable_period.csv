@@ -1,0 +1,5 @@
+transaction_id,date,transaction_type,amount,vat_treatment,vat_rate,currency
+TXN-4001,2026-08-03,sale,40000.00,zero-rated,,USD
+TXN-4002,2026-08-10,sale,12000.00,standard-rated,0.15,USD
+TXN-4003,2026-08-06,purchase,90000.00,standard-rated,0.15,USD
+TXN-4004,2026-08-15,purchase,20000.00,standard-rated,0.15,USD

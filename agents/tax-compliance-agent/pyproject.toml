@@ -1,0 +1,13 @@
+[project]
+name = "tax-compliance-agent"
+version = "0.1.0"
+description = "Tax compliance: computes a period-end VAT provision (output VAT, input VAT, net payable/refundable) deterministically from a period's transactions, flags anomalies worth specialist scrutiny, drafts a cited filing-support narrative that never claims the return is ready to file, and routes it to human approval"
+requires-python = ">=3.11"
+# Own copy of the anthropic SDK, scoped to this agent's folder (CLAUDE.md rule
+# #5 — one agent per folder, shared logic only in platform/). This agent calls
+# the Claude API directly to draft the filing-support narrative, same as
+# agents/close-agent, agents/fpa-agent and agents/vat-treatment-agent.
+dependencies = ["anthropic>=0.40,<1"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]

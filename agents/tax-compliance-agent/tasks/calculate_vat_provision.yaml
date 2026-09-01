@@ -1,0 +1,35 @@
+name: calculate_vat_provision
+description: >
+  Fetch a period's VAT transactions through a VAT-transaction connector, compute
+  output VAT and input VAT by treatment category deterministically (amount x rate
+  for standard-rated lines, zero otherwise), net them into the period's payable
+  or refundable position, flag anomalies (net refundable position, unrecognized
+  vat_treatment, treatment/rate mismatch, unrecognized transaction_type), draft a
+  cited filing-support narrative grounded in platform/knowledge VAT filing
+  guidance when available (ungrounded otherwise), and submit the full VAT
+  provision report for human approval.
+inputs:
+  - source_system
+  - transactions_folder   # folder of VAT-transaction CSVs (transaction_id,date,transaction_type,amount,vat_treatment,vat_rate[,currency])
+  - knowledge_base        # pre-ingested platform/knowledge.KnowledgeBase
+  - policy                # tax_compliance_agent.ProvisionPolicy; default flag_refundable=True, expected_standard_rate=None
+  - period_label          # optional label for the period; default derived from the transaction date range
+  - model                 # default claude-sonnet-5
+  - effort                # default medium
+  - retrieval_top_k       # default 3
+  - preparer              # default "tax-compliance-agent"
+outputs:
+  - vat_provision_report  # VatProvisionReport: computed transactions, by-treatment breakdown, net position, anomalies, narrative; see tax_compliance_agent.models
+  - approval_request_id
+autonomy: draft_only
+connectors:
+  - erp: read (via platform/connectors FileVatTransactionConnector)
+knowledge_corpora:
+  - vat_policy
+audit_events:
+  - vat_transactions_retrieved
+  - vat_provision_computed                     # carries the by-treatment breakdown + every anomaly with its deterministic reason
+  - filing_guidance_context_retrieved          # grounded (bool), chunk ids, citations
+  - filing_support_narrative_drafted           # or filing_support_narrative_refused / filing_support_narrative_failed
+  - vat_provision_report_generated
+  - "approval_submitted:vat_provision"         # emitted by platform/approvals on submit

@@ -1,0 +1,20 @@
+name: tax-compliance-agent
+version: 0.1.0
+description: >
+  Period-end VAT provision. Computes output VAT (VAT on sales) and input VAT
+  (VAT on purchases) by treatment category deterministically from a period's
+  transactions, nets them into the period's payable or refundable position,
+  flags anomalies worth scrutiny (a net refund, an unrecognized VAT treatment,
+  a treatment/rate mismatch), drafts a plain-English filing-support narrative
+  that treats the calculation as authoritative and never claims the return is
+  correct or ready to file, and submits the full provision report for human
+  review. Uses the same four VAT categories as vat-treatment-agent.
+autonomy: draft_only
+connectors:
+  - erp: read           # a period's VAT transactions, via platform/connectors FileVatTransactionConnector
+approval_rules:
+  external_effects: always_require_human
+knowledge_corpora:
+  - vat_policy
+tasks:
+  - calculate_vat_provision
