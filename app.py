@@ -37,6 +37,12 @@ functions, unmodified:
                            (category limits, receipt age, required fields),
                            and a cited explanation of any violation. Real
                            Claude API calls; same key.
+  * fpa-agent            : run_driver_based_forecast() — deterministic
+                           driver-based projection of historical actuals with
+                           configurable per-category growth assumptions,
+                           high-sensitivity flagging, and a forecast narrative
+                           that frames assumptions as assumptions. Always
+                           makes a real Claude API call; same key.
 
 Every run here uses throwaway in-memory audit-log / approval-queue stores,
 exactly like agents/vat-treatment-agent/manual_live_run.py — nothing is
@@ -67,6 +73,7 @@ for path in (
     ROOT / "agents" / "controls-sox-agent",
     ROOT / "agents" / "ar-collections-agent",
     ROOT / "agents" / "expense-agent",
+    ROOT / "agents" / "fpa-agent",
     PLATFORM / "connectors",
     PLATFORM / "approvals",
     PLATFORM / "audit-log",
@@ -83,6 +90,7 @@ from close_agent import FlagThresholds, run_close_variance_analysis  # noqa: E40
 from connectors import ConnectorParseError, FileDocumentConnector  # noqa: E402
 from controls_sox_agent import ControlPolicy, run_journal_entry_control_test  # noqa: E402
 from expense_agent import ExpensePolicy, check_receipt_policy_compliance  # noqa: E402
+from fpa_agent import ForecastAssumptions, run_driver_based_forecast  # noqa: E402
 from knowledge import KnowledgeBase  # noqa: E402
 from reconciliation_agent import run_reconciliation  # noqa: E402
 from vat_treatment_agent import InvoiceLineItem, determine_vat_treatment  # noqa: E402
@@ -126,6 +134,9 @@ EXPENSE_POLICY_DOCS = _EXPENSE_FIXTURES.ALL_DOCUMENTS
 # The date the committed sample receipts are aged against — default the view's
 # "as of date" to it so the sample-picker labels ("~5 months old") hold.
 EXPENSE_AS_OF = _EXPENSE_FIXTURES.AS_OF
+FPA_METHODOLOGY_DOCS = _load_fixture_module(
+    "fpa_agent_evals_fixtures", "fpa-agent"
+).ALL_DOCUMENTS
 
 SAMPLE_DATA = ROOT / "sample_data"
 AP_INVOICE_DIR = ROOT / "agents" / "ap-agent" / "evals" / "fixtures" / "invoices"
@@ -176,6 +187,8 @@ EXPENSE_SAMPLE_RECEIPTS = {
     "Stale hotel — $212 room within the lodging cap but ~5 months old "
     "(receipt_too_old)": "stale_hotel.png",
 }
+
+FPA_ACTUALS_DIR = ROOT / "agents" / "fpa-agent" / "evals" / "fixtures" / "actuals"
 
 
 # --------------------------------------------------------------------------
@@ -1532,6 +1545,276 @@ def _render_expense_result(run, audit_log) -> None:
 
 
 # --------------------------------------------------------------------------
+# FP&A agent — forecast view
+# --------------------------------------------------------------------------
+def render_fpa() -> None:
+    st.header("FP&A Agent — Driver-Based Forecast")
+    st.write(
+        "Projects historical actuals forward in **deterministic** code — each "
+        "line item compounded from its most recent actual by a per-category "
+        "growth assumption (or a flat default) — flags any line whose assumed "
+        "rate implies an unusually large period-over-period change, retrieves "
+        "from `platform/knowledge` to draft a forecast narrative, then submits "
+        "the whole forecast for human approval. The model writes only the "
+        "narrative; it never does the projection arithmetic. `autonomy: "
+        "draft_only`."
+    )
+    st.caption(
+        "The FP&A-methodology corpus is a **synthetic test fixture** "
+        "(\"Larenthia Trading Co\", the same fictional entity as the other "
+        "agents) — not a real methodology. It exists to exercise retrieval, "
+        "citation, and the grounded-vs-ungrounded narrative paths."
+    )
+
+    api_key = _get_api_key()
+    if not api_key:
+        _missing_key_warning(
+            "The FP&A agent always makes a real Claude API call to draft the "
+            "forecast narrative,"
+        )
+
+    col_g, col_t, col_h = st.columns(3)
+    default_pct = col_g.number_input(
+        "Default growth rate (% per period)", value=2.0, step=0.5
+    )
+    threshold_pct = col_t.number_input(
+        "High-sensitivity threshold (% period-over-period)",
+        min_value=0.0, value=25.0, step=5.0,
+    )
+    horizon = col_h.number_input(
+        "Horizon (periods to project)", min_value=1, value=3, step=1
+    )
+    category_overrides = st.text_input(
+        "Per-category growth overrides",
+        value="Revenue: 30",
+        help="Comma-separated `Category: percent-per-period`. Leave blank to "
+        "apply the default rate to every line.",
+    )
+    st.caption(
+        "Per-category overrides format: `Revenue: 30, Cost of sales: 1.5`. The "
+        "sample actuals carry the categories **Revenue**, **Cost of sales** and "
+        "**Operating expenses**."
+    )
+
+    source = st.radio(
+        "Historical actuals",
+        ["Use the committed sample actuals", "Upload my own"],
+        horizontal=True,
+    )
+
+    actuals_upload = None
+    if source == "Upload my own":
+        actuals_upload = st.file_uploader("Historical actuals CSV", type="csv")
+        st.caption(
+            "One CSV containing every historical period. Schema: "
+            "`period,account,line_item,category,amount,currency` (`category` and "
+            "`currency` optional). Periods are monthly `YYYY-MM`; all rows must "
+            "share one currency."
+        )
+    else:
+        st.caption(
+            "The committed sample is three fictional monthly CSVs from the "
+            "fpa-agent eval suite (`agents/fpa-agent/evals/fixtures/actuals/` — "
+            "`2026-04`, `2026-05`, `2026-06`), read together as one history. "
+            "\"Software subscriptions\" drops out of the last month, so the "
+            "carry-forward / `stale_base` flag fires on it."
+        )
+
+    if not st.button("Run forecast", type="primary", disabled=not api_key):
+        return
+
+    if source == "Upload my own" and actuals_upload is None:
+        st.error("Upload a historical-actuals CSV first.")
+        return
+
+    category_growth = {}
+    raw = category_overrides.strip()
+    if raw:
+        try:
+            for part in raw.split(","):
+                name, pct = part.split(":")
+                category_growth[name.strip()] = Decimal(pct.strip()) / Decimal("100")
+        except (ValueError, ArithmeticError):
+            st.error(
+                "Couldn't parse the per-category overrides — use "
+                "`Category: percent`, comma-separated."
+            )
+            return
+
+    assumptions = ForecastAssumptions(
+        default_growth=Decimal(str(default_pct)) / Decimal("100"),
+        category_growth=category_growth,
+        max_pop_change_pct=Decimal(str(threshold_pct)) / Decimal("100"),
+    )
+
+    import anthropic
+
+    kb = KnowledgeBase()
+    kb.ingest(FPA_METHODOLOGY_DOCS)
+    audit_log, approval_queue = new_stores()
+    client = anthropic.Anthropic(api_key=api_key)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        if source == "Upload my own":
+            actuals_folder = Path(tmp) / "actuals"
+            actuals_folder.mkdir()
+            (actuals_folder / "upload.csv").write_bytes(actuals_upload.getvalue())
+        else:
+            actuals_folder = FPA_ACTUALS_DIR
+
+        try:
+            with st.spinner("Projecting the forecast and drafting the narrative via Claude…"):
+                run = run_driver_based_forecast(
+                    source_system="demo_co",
+                    actuals_folder=actuals_folder,
+                    knowledge_base=kb,
+                    audit_log=audit_log,
+                    approval_queue=approval_queue,
+                    assumptions=assumptions,
+                    horizon=int(horizon),
+                    client=client,
+                )
+            _render_fpa_result(run, audit_log)
+        except anthropic.AnthropicError as exc:
+            st.error(f"Claude API call failed: {exc}")
+        except (ValueError, ConnectorParseError) as exc:
+            st.error(f"Could not run the forecast: {exc}")
+        finally:
+            audit_log.close()
+            approval_queue.close()
+
+
+def _render_fpa_result(run, audit_log) -> None:
+    report = run.report
+    summary = report.summary()
+
+    st.warning(
+        "**This is a projection, not a prediction.** Every figure below is "
+        "`base × (1 + assumed rate)^periods` and holds only if the assumed "
+        "growth rates hold. The growth rates are inputs the planner chose, not "
+        "measured trends."
+    )
+    st.caption(
+        f"Base period {report.base_period} · projecting "
+        f"{', '.join(report.projected_periods)} · model `{report.model or '—'}` "
+        "· draft for a reviewer, not a committed plan"
+    )
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Base period", report.base_period)
+    c2.metric("Horizon", report.horizon)
+    c3.metric("Currency", report.currency)
+    c4.metric("Flagged rows", summary["flagged_count"])
+    c5, c6, c7 = st.columns(3)
+    c5.metric("Total base", money(Decimal(summary["total_base"])))
+    c6.metric(
+        f"Total projected ({report.projected_periods[-1]})",
+        money(Decimal(summary["total_projected_final"])),
+    )
+    growth = summary["total_growth_pct_over_horizon"]
+    c7.metric(
+        "Total growth over horizon",
+        "n/a" if growth is None else f"{Decimal(growth) * 100:.1f}%",
+    )
+
+    st.subheader("By category")
+    st.dataframe(
+        [
+            {
+                "category": category,
+                "base": money(Decimal(v["base"])),
+                f"projected ({report.projected_periods[-1]})": money(Decimal(v["final"])),
+                "growth over horizon": (
+                    "n/a" if v["growth_pct_over_horizon"] is None
+                    else f"{Decimal(v['growth_pct_over_horizon']) * 100:.1f}%"
+                ),
+            }
+            for category, v in summary["by_category"].items()
+        ],
+        hide_index=True,
+    )
+
+    st.subheader("Projection")
+    by_line: dict = {}
+    for pl in report.projected_lines:
+        key = (pl.account, pl.line_item)
+        row = by_line.setdefault(
+            key,
+            {
+                "": "🚩" if pl.flagged else "",
+                "account": pl.account,
+                "line item": pl.line_item,
+                "category": pl.category or "—",
+                "base": money(pl.base_amount),
+                "base period": pl.base_period,
+                "assumed rate / period": f"{pl.growth_rate * 100:.1f}%",
+                "source": pl.growth_source,
+            },
+        )
+        row[pl.period] = money(pl.projected_amount)
+        if pl.flagged:
+            row[""] = "🚩"
+    ordered = (
+        ["", "account", "line item", "category", "base", "base period"]
+        + list(report.projected_periods)
+        + ["assumed rate / period", "source"]
+    )
+    st.dataframe(
+        [{col: row.get(col, "") for col in ordered} for row in by_line.values()],
+        hide_index=True,
+    )
+
+    st.subheader("Flagged lines")
+    if report.flagged:
+        flagged_by_line: dict = {}
+        for pl in report.flagged:
+            entry = flagged_by_line.setdefault(
+                (pl.account, pl.line_item),
+                {"rate": pl.growth_rate, "source": pl.growth_source, "reasons": []},
+            )
+            for reason in pl.flag_reasons:
+                if reason not in entry["reasons"]:
+                    entry["reasons"].append(reason)
+        for (account, line_item), entry in flagged_by_line.items():
+            st.markdown(
+                f"**{account} · {line_item}** — assumed rate "
+                f"{entry['rate'] * 100:.1f}% / period ({entry['source']})"
+            )
+            for reason in entry["reasons"]:
+                st.write(f"- {reason}")
+    else:
+        st.success(
+            "No line tripped the high-sensitivity, negative-projection, or "
+            "stale-base checks."
+        )
+
+    st.subheader("Drafted forecast narrative")
+    if report.narrative_skipped_reason:
+        st.info(f"Narrative skipped: `{report.narrative_skipped_reason}`.")
+    else:
+        n = report.narrative
+        st.markdown(n.summary)
+        st.markdown("**Assumptions — stated as assumptions:**")
+        for item in n.assumptions_described:
+            st.write(f"- {item}")
+        st.markdown("**Flagged high-sensitivity items called out:**")
+        if n.flagged_items_called_out:
+            for item in n.flagged_items_called_out:
+                st.write(f"- {item}")
+        else:
+            st.write("_None — nothing was flagged as high-sensitivity._")
+        if n.citations:
+            st.markdown("**Citations:**")
+            for citation in n.citations:
+                st.write(f"- {citation}")
+        else:
+            st.caption("Ungrounded — no methodology excerpt cited.")
+
+    _render_approval(run.approval_request)
+    _render_audit_log(audit_log)
+
+
+# --------------------------------------------------------------------------
 # app shell
 # --------------------------------------------------------------------------
 def main() -> None:
@@ -1550,6 +1833,7 @@ def main() -> None:
         "Controls (SoD) Agent": render_controls_sod,
         "AR Collections Agent": render_ar_collections,
         "Expense Agent": render_expense,
+        "FPA Agent (Forecast)": render_fpa,
     }
     agent = st.sidebar.radio("Agent", list(views))
     views[agent]()
