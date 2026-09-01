@@ -14,6 +14,17 @@ functions, unmodified:
                            uploaded (or committed sample) invoice image, a
                            deterministic line-sum-vs-grand-total check, and
                            cited GL coding. Real Claude API calls; same key.
+  * close-agent          : run_close_variance_analysis() — deterministic
+                           budget-vs-actual variances by line item with
+                           configurable threshold flagging, and cited
+                           plain-English explanations for the flagged lines.
+                           Real Claude API calls (only when something is
+                           flagged); same key.
+  * controls-sox-agent   : run_journal_entry_control_test() — deterministic
+                           segregation-of-duties test over journal-entry
+                           approvals, and cited deficiency narratives for the
+                           flagged entries. Real Claude API calls (only when
+                           there is a violation); same key.
 
 Every run here uses throwaway in-memory audit-log / approval-queue stores,
 exactly like agents/vat-treatment-agent/manual_live_run.py — nothing is
@@ -25,6 +36,7 @@ Run:  streamlit run app.py
 import importlib.util
 import sys
 import tempfile
+from decimal import Decimal
 from pathlib import Path
 
 import streamlit as st
@@ -39,6 +51,8 @@ for path in (
     ROOT / "agents" / "vat-treatment-agent",
     ROOT / "agents" / "vat-treatment-agent" / "evals",  # synthetic VAT corpus
     ROOT / "agents" / "ap-agent",
+    ROOT / "agents" / "close-agent",
+    ROOT / "agents" / "controls-sox-agent",
     PLATFORM / "connectors",
     PLATFORM / "approvals",
     PLATFORM / "audit-log",
@@ -50,23 +64,40 @@ for path in (
 from ap_agent import process_invoice  # noqa: E402
 from approvals import ApprovalQueue  # noqa: E402
 from audit_log import AuditLogStore  # noqa: E402
-from connectors import FileDocumentConnector  # noqa: E402
+from close_agent import FlagThresholds, run_close_variance_analysis  # noqa: E402
+from connectors import ConnectorParseError, FileDocumentConnector  # noqa: E402
+from controls_sox_agent import ControlPolicy, run_journal_entry_control_test  # noqa: E402
 from knowledge import KnowledgeBase  # noqa: E402
 from reconciliation_agent import run_reconciliation  # noqa: E402
 from vat_treatment_agent import InvoiceLineItem, determine_vat_treatment  # noqa: E402
 
 from fixtures import ALL_DOCUMENTS  # noqa: E402  (agents/vat-treatment-agent/evals/fixtures.py)
 
-# agents/ap-agent/evals/fixtures.py also defines ALL_DOCUMENTS (its synthetic
-# chart of accounts). It collides with the VAT `fixtures` module already
-# imported above, so load it by file path under its own name instead.
-_AP_FIXTURES_PATH = ROOT / "agents" / "ap-agent" / "evals" / "fixtures.py"
-_ap_fixtures_spec = importlib.util.spec_from_file_location(
-    "ap_agent_evals_fixtures", _AP_FIXTURES_PATH
-)
-_ap_fixtures = importlib.util.module_from_spec(_ap_fixtures_spec)
-_ap_fixtures_spec.loader.exec_module(_ap_fixtures)
-AP_CHART_OF_ACCOUNTS_DOCS = _ap_fixtures.ALL_DOCUMENTS
+
+def _load_fixture_module(module_name: str, agent_dir: str):
+    """Load an agent's evals/fixtures.py by file path under a unique name.
+
+    Every agent's evals/fixtures.py defines `ALL_DOCUMENTS`, so they collide
+    with each other and with the VAT `fixtures` module already imported above.
+    Loading each by path under its own module name keeps them separate — the
+    same trick the AP view has always used.
+    """
+    path = ROOT / "agents" / agent_dir / "evals" / "fixtures.py"
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+AP_CHART_OF_ACCOUNTS_DOCS = _load_fixture_module(
+    "ap_agent_evals_fixtures", "ap-agent"
+).ALL_DOCUMENTS
+CLOSE_ACCOUNTING_POLICY_DOCS = _load_fixture_module(
+    "close_agent_evals_fixtures", "close-agent"
+).ALL_DOCUMENTS
+CONTROLS_POLICY_DOCS = _load_fixture_module(
+    "controls_sox_agent_evals_fixtures", "controls-sox-agent"
+).ALL_DOCUMENTS
 
 SAMPLE_DATA = ROOT / "sample_data"
 AP_INVOICE_DIR = ROOT / "agents" / "ap-agent" / "evals" / "fixtures" / "invoices"
@@ -74,6 +105,24 @@ AP_SAMPLE_INVOICES = {
     "Clean — office supplies (totals tie, GL coding suggested)": "clean_office_supplies.png",
     "Consulting services (advisory fees, reimbursable travel)": "consulting_services.png",
     "Mismatched totals (deterministic check flags a bad grand total)": "mismatched_totals.png",
+}
+
+CLOSE_FIXTURES_DIR = ROOT / "agents" / "close-agent" / "evals" / "fixtures"
+CLOSE_SAMPLE_PERIODS = {
+    "2026-07 — eventful (large % and $ variances, unbudgeted spend)": "2026-07",
+    "2026-08 — quiet (every line within ±5% — nothing flagged, no Claude call)": "2026-08",
+    "2026-09 — edge cases (revenue miss, budgeted line with no actual, unbudgeted fees)": "2026-09",
+}
+
+CONTROLS_JE_DIR = (
+    ROOT / "agents" / "controls-sox-agent" / "evals" / "fixtures" / "journal_entries"
+)
+CONTROLS_SAMPLE_BATCHES = {
+    "Clean batch — 5 compliant entries (no violations, no Claude call)": "clean_batch.csv",
+    "SoD violations — self-approval, missing 2nd approver, duplicate approvers, "
+    "preparer as 2nd approver": "sod_violations.csv",
+    "Edge cases — entry exactly at threshold, unapproved entry, case/whitespace "
+    "name match": "edge_cases.csv",
 }
 
 
@@ -90,6 +139,42 @@ def new_stores():
     audit_log = AuditLogStore(":memory:")
     approval_queue = ApprovalQueue(":memory:", audit_log)
     return audit_log, approval_queue
+
+
+def _render_audit_log(audit_log) -> None:
+    st.subheader("Audit log")
+    st.write("Every step is recorded in the append-only, hash-chained log:")
+    for e in audit_log.get_all():
+        st.write(f"- `{e.action}` (actor: {e.actor})")
+
+    verification = audit_log.verify_chain()
+    if verification.ok:
+        st.success("verify_chain() → ok (hash chain intact, no tampering detected)")
+    else:
+        st.error(
+            f"verify_chain() → broken at record {verification.broken_record_id}: "
+            f"{verification.reason}"
+        )
+
+
+def _render_approval(request) -> None:
+    st.subheader("Approval")
+    st.write(
+        f"Request **#{request.id}** submitted by `{request.preparer}` — "
+        f"status **{request.status}**, awaiting **{request.current_stage}**. "
+        "Agents draft; humans approve."
+    )
+
+
+def _missing_key_warning(what: str) -> None:
+    st.warning(
+        f"**ANTHROPIC_API_KEY is not configured.** {what} so add the key to "
+        "Streamlit secrets to run it:\n\n"
+        "- locally: create `.streamlit/secrets.toml` with "
+        "`ANTHROPIC_API_KEY = \"sk-ant-...\"`\n"
+        "- deployed: set it in the app's **Settings → Secrets**\n\n"
+        "The reconciliation agent needs no key and works without this."
+    )
 
 
 # --------------------------------------------------------------------------
@@ -588,6 +673,379 @@ def _render_ap_audit(audit_log) -> None:
 
 
 # --------------------------------------------------------------------------
+# Close agent — variance analysis view
+# --------------------------------------------------------------------------
+def render_close_variance() -> None:
+    st.header("Close Agent — Variance Analysis")
+    st.write(
+        "Computes budget-vs-actual variances for every line item in "
+        "**deterministic** code, flags the lines that breach configurable "
+        "percentage / dollar thresholds, retrieves from `platform/knowledge` "
+        "to draft a cited plain-English explanation for each flagged line, "
+        "then submits the whole report for human approval. The model only "
+        "writes prose — it never touches the arithmetic."
+    )
+    st.caption(
+        "The accounting-policy corpus is a **synthetic test fixture** "
+        "(\"Larenthia Trading Co\", the same fictional entity as the other "
+        "agents) — not a real close policy. It exists to exercise retrieval, "
+        "citation, and the grounded-vs-ungrounded explanation paths."
+    )
+
+    api_key = _get_api_key()
+    if not api_key:
+        _missing_key_warning(
+            "The close agent makes a real Claude API call to explain flagged "
+            "variances (a period with nothing flagged makes no call),"
+        )
+
+    col_pct, col_amt = st.columns(2)
+    pct = col_pct.number_input(
+        "Percentage threshold (%) — flag |actual − budget| / budget ≥ this",
+        min_value=0.0, value=10.0, step=1.0,
+    )
+    amt = col_amt.number_input(
+        "Absolute $ threshold — flag |actual − budget| ≥ this (0 = disabled)",
+        min_value=0, value=25000, step=1000,
+    )
+    thresholds = FlagThresholds(
+        pct=Decimal(str(pct / 100)) if pct > 0 else None,
+        amount=Decimal(str(amt)) if amt > 0 else None,
+    )
+
+    source = st.radio(
+        "Input data",
+        ["Use a committed sample period", "Upload my own budget + actuals CSVs"],
+        horizontal=True,
+    )
+
+    budget_upload = actuals_upload = None
+    upload_period = ""
+    if source == "Upload my own budget + actuals CSVs":
+        col_a, col_b = st.columns(2)
+        budget_upload = col_a.file_uploader("Budget CSV", type="csv")
+        actuals_upload = col_b.file_uploader("Actuals CSV", type="csv")
+        upload_period = st.text_input(
+            "Period to analyze (the exact value in the CSVs' `period` column, e.g. 2026-07)"
+        )
+        st.caption(
+            "Both CSVs share the schema "
+            "`period,account,line_item,category,amount,currency` "
+            "(`category` and `currency` optional)."
+        )
+    else:
+        label = st.radio("Sample period", list(CLOSE_SAMPLE_PERIODS), index=0)
+        sample_period = CLOSE_SAMPLE_PERIODS[label]
+        st.caption(
+            "Sample budget/actuals are fictional figures from the close-agent "
+            "eval suite (`agents/close-agent/evals/fixtures/`) — not real ledgers."
+        )
+
+    if not st.button("Run variance analysis", type="primary", disabled=not api_key):
+        return
+
+    import anthropic
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+
+        if source == "Upload my own budget + actuals CSVs":
+            if budget_upload is None or actuals_upload is None:
+                st.error("Upload both a budget CSV and an actuals CSV first.")
+                return
+            if not upload_period.strip():
+                st.error("Enter the period to analyze.")
+                return
+            period = upload_period.strip()
+            budget_folder = tmp_path / "budget"
+            actuals_folder = tmp_path / "actuals"
+            budget_folder.mkdir()
+            actuals_folder.mkdir()
+            (budget_folder / "upload.csv").write_bytes(budget_upload.getvalue())
+            (actuals_folder / "upload.csv").write_bytes(actuals_upload.getvalue())
+        else:
+            period = sample_period
+            budget_folder = CLOSE_FIXTURES_DIR / "budget"
+            actuals_folder = CLOSE_FIXTURES_DIR / "actuals"
+
+        kb = KnowledgeBase()
+        kb.ingest(CLOSE_ACCOUNTING_POLICY_DOCS)
+        audit_log, approval_queue = new_stores()
+        client = anthropic.Anthropic(api_key=api_key)
+
+        try:
+            with st.spinner("Computing variances and drafting explanations via Claude…"):
+                run = run_close_variance_analysis(
+                    source_system="demo_co",
+                    period=period,
+                    budget_folder=budget_folder,
+                    actuals_folder=actuals_folder,
+                    knowledge_base=kb,
+                    audit_log=audit_log,
+                    approval_queue=approval_queue,
+                    client=client,
+                    thresholds=thresholds,
+                )
+            _render_close_result(run, audit_log)
+        except anthropic.AnthropicError as exc:
+            st.error(f"Claude API call failed: {exc}")
+        except ValueError as exc:
+            st.error(f"Could not run the analysis: {exc}")
+        finally:
+            audit_log.close()
+            approval_queue.close()
+
+
+def _render_close_result(run, audit_log) -> None:
+    report = run.report
+    summary = report.summary()
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Line items", summary["line_count"])
+    c2.metric("Flagged", summary["flagged_count"])
+    c3.metric("Currency", report.currency)
+    c4, c5, c6 = st.columns(3)
+    c4.metric("Total budget", money(Decimal(summary["total_budget"])))
+    c5.metric("Total actual", money(Decimal(summary["total_actual"])))
+    c6.metric("Total variance", money(Decimal(summary["total_variance"])))
+    st.caption(
+        f"Period {report.period} · model `{report.model or '—'}` · draft for a "
+        "reviewer, not a final close position"
+    )
+
+    st.subheader("Variance table")
+    st.dataframe(
+        [
+            {
+                "": "🚩" if lv.flagged else "",
+                "account": lv.account,
+                "line item": lv.line_item,
+                "category": lv.category or "—",
+                "budget": money(lv.budget_amount),
+                "actual": money(lv.actual_amount),
+                "variance": money(lv.variance),
+                "pct": "—" if lv.pct_variance is None else f"{lv.pct_variance * 100:.1f}%",
+                "direction": lv.direction.replace("_", " "),
+                "presence": lv.presence.replace("_", " "),
+            }
+            for lv in report.line_variances
+        ],
+        hide_index=True,
+    )
+
+    st.subheader("Flagged variances")
+    if report.flagged:
+        for lv in report.flagged:
+            st.markdown(
+                f"**{lv.account} · {lv.line_item}** — {lv.direction.replace('_', ' ')}"
+            )
+            for reason in lv.flag_reasons:
+                st.write(f"- {reason}")
+    else:
+        st.success("Nothing breached the thresholds — no explanations needed.")
+
+    st.subheader("Drafted explanations")
+    if report.explanations_skipped_reason:
+        st.info(f"Explanations skipped: `{report.explanations_skipped_reason}`.")
+    else:
+        for e in report.explanations:
+            st.markdown(f"**{e.account} · {e.line_item}**")
+            st.write(e.explanation)
+            if e.primary_drivers:
+                st.caption(f"Primary drivers: {', '.join(e.primary_drivers)}")
+            if e.citations:
+                for citation in e.citations:
+                    st.write(f"- {citation}")
+            else:
+                st.caption("Ungrounded — no policy excerpt cited.")
+
+    _render_approval(run.approval_request)
+    _render_audit_log(audit_log)
+
+
+# --------------------------------------------------------------------------
+# Controls (SoD) agent view
+# --------------------------------------------------------------------------
+def render_controls_sod() -> None:
+    st.header("Controls (SoD) Agent")
+    st.write(
+        "Tests every journal entry against a **segregation-of-duties** control "
+        "in deterministic code — the preparer may not also approve, the two "
+        "named approvers must differ, and an entry at or above a configurable "
+        "dollar threshold needs a second approver — then retrieves from "
+        "`platform/knowledge` to draft a cited plain-English deficiency "
+        "narrative for each exception and submits the control-test report for "
+        "human approval. `autonomy: draft_only`."
+    )
+    st.caption(
+        "The internal-controls-policy corpus is a **synthetic test fixture** "
+        "(\"Larenthia Trading Co\") — not a real controls policy. It exists to "
+        "exercise retrieval, citation, and the grounded-vs-ungrounded paths."
+    )
+
+    api_key = _get_api_key()
+    if not api_key:
+        _missing_key_warning(
+            "The controls agent makes a real Claude API call to narrate flagged "
+            "exceptions (a batch with no violations makes no call),"
+        )
+
+    threshold = st.number_input(
+        "Dual-approval threshold ($) — an entry at or above this needs two distinct approvers",
+        min_value=0, value=50000, step=1000,
+    )
+    policy = ControlPolicy(dual_approval_threshold=Decimal(str(threshold)))
+
+    source = st.radio(
+        "Journal entries",
+        ["Use a committed sample batch", "Upload my own journal-entry CSV"],
+        horizontal=True,
+    )
+
+    je_upload = None
+    if source == "Upload my own journal-entry CSV":
+        je_upload = st.file_uploader("Journal-entry CSV", type="csv")
+        st.caption(
+            "Schema: `entry_id,date,account,amount,preparer,approver_1,approver_2` "
+            "(`approver_2` and a trailing `currency` column optional)."
+        )
+    else:
+        label = st.radio("Sample batch", list(CONTROLS_SAMPLE_BATCHES), index=1)
+        sample_file = CONTROLS_SAMPLE_BATCHES[label]
+        st.caption(
+            "Sample batches are fictional entries from the controls-sox-agent "
+            "eval suite (`agents/controls-sox-agent/evals/fixtures/"
+            "journal_entries/`) — not real journal entries."
+        )
+
+    if not st.button("Run control test", type="primary", disabled=not api_key):
+        return
+
+    import anthropic
+
+    with tempfile.TemporaryDirectory() as tmp:
+        entries_folder = Path(tmp) / "journal_entries"
+        entries_folder.mkdir()
+
+        if source == "Upload my own journal-entry CSV":
+            if je_upload is None:
+                st.error("Upload a journal-entry CSV first.")
+                return
+            (entries_folder / "upload.csv").write_bytes(je_upload.getvalue())
+        else:
+            (entries_folder / sample_file).write_text(
+                (CONTROLS_JE_DIR / sample_file).read_text()
+            )
+
+        kb = KnowledgeBase()
+        kb.ingest(CONTROLS_POLICY_DOCS)
+        audit_log, approval_queue = new_stores()
+        client = anthropic.Anthropic(api_key=api_key)
+
+        try:
+            with st.spinner("Testing journal-entry approvals and drafting narratives via Claude…"):
+                run = run_journal_entry_control_test(
+                    source_system="demo_co",
+                    entries_folder=entries_folder,
+                    knowledge_base=kb,
+                    audit_log=audit_log,
+                    approval_queue=approval_queue,
+                    client=client,
+                    policy=policy,
+                )
+            _render_controls_result(run, audit_log)
+        except anthropic.AnthropicError as exc:
+            st.error(f"Claude API call failed: {exc}")
+        except (ValueError, ConnectorParseError) as exc:
+            st.error(f"Could not run the control test: {exc}")
+        finally:
+            audit_log.close()
+            approval_queue.close()
+
+
+def _render_controls_result(run, audit_log) -> None:
+    report = run.report
+    summary = report.summary()
+
+    st.caption(
+        f"Control **{report.control_id}** — {report.control_name} · "
+        f"model `{report.model or '—'}` · draft for a reviewer, not a final "
+        "controls conclusion"
+    )
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Entries tested", summary["entries_tested"])
+    c2.metric("With violations", summary["entries_with_violations"])
+    c3.metric("Violations", summary["violation_count"])
+    c4.metric("Dual-approval required", summary["dual_approval_required_count"])
+    if summary["violations_by_code"]:
+        st.write(
+            "By type: "
+            + ", ".join(
+                f"`{code}` × {count}"
+                for code, count in sorted(summary["violations_by_code"].items())
+            )
+        )
+
+    st.subheader("Entries tested")
+    st.dataframe(
+        [
+            {
+                "": "🚩" if not r.passed else "✅",
+                "entry": r.entry_id,
+                "date": r.date,
+                "account": r.account,
+                "amount": money(r.amount),
+                "preparer": r.preparer,
+                "approver 1": r.approver_1 or "—",
+                "approver 2": r.approver_2 or "—",
+                "dual approval req.": "yes" if r.dual_approval_required else "no",
+            }
+            for r in report.results
+        ],
+        hide_index=True,
+    )
+
+    st.subheader("Violations")
+    violation_rows = [
+        {
+            "entry": r.entry_id,
+            "code": v.code,
+            "reason (deterministic)": v.detail,
+            "amount": money(r.amount),
+            "preparer": r.preparer,
+            "approvers": ", ".join(
+                a for a in (r.approver_1, r.approver_2) if a
+            ) or "—",
+        }
+        for r in report.results
+        for v in r.violations
+    ]
+    if violation_rows:
+        st.dataframe(violation_rows, hide_index=True)
+    else:
+        st.success("Every entry passed the segregation-of-duties control.")
+
+    st.subheader("Drafted deficiency narratives")
+    if report.narratives_skipped_reason:
+        st.info(f"Narratives skipped: `{report.narratives_skipped_reason}`.")
+    else:
+        for n in report.narratives:
+            st.markdown(f"**{n.entry_id}** · `{n.violation_code}`")
+            st.write(n.narrative)
+            if n.remediation:
+                st.caption(f"Remediation: {', '.join(n.remediation)}")
+            if n.citations:
+                for citation in n.citations:
+                    st.write(f"- {citation}")
+            else:
+                st.caption("Ungrounded — no policy excerpt cited.")
+
+    _render_approval(run.approval_request)
+    _render_audit_log(audit_log)
+
+
+# --------------------------------------------------------------------------
 # app shell
 # --------------------------------------------------------------------------
 def main() -> None:
@@ -598,17 +1056,15 @@ def main() -> None:
         "audit-log and approval-queue stores — nothing is persisted."
     )
 
-    agent = st.sidebar.radio(
-        "Agent",
-        ["Reconciliation Agent", "VAT Treatment Agent", "AP Invoice Agent"],
-    )
-
-    if agent == "Reconciliation Agent":
-        render_reconciliation()
-    elif agent == "VAT Treatment Agent":
-        render_vat_treatment()
-    else:
-        render_ap_invoice()
+    views = {
+        "Reconciliation Agent": render_reconciliation,
+        "VAT Treatment Agent": render_vat_treatment,
+        "AP Invoice Agent": render_ap_invoice,
+        "Close Agent (Variance Analysis)": render_close_variance,
+        "Controls (SoD) Agent": render_controls_sod,
+    }
+    agent = st.sidebar.radio("Agent", list(views))
+    views[agent]()
 
 
 if __name__ == "__main__":
