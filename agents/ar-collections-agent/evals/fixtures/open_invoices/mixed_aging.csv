@@ -1,0 +1,7 @@
+invoice_id,customer,invoice_date,due_date,amount,currency,last_payment_date
+INV-6001,Meridian Foods,2026-08-05,2026-09-05,5400.00,USD,2026-08-01
+INV-6002,Talbot Interiors,2026-08-10,2026-09-01,2100.00,USD,2026-08-12
+INV-6003,Kestrel Media,2026-06-18,2026-07-18,12500.00,USD,2026-06-10
+INV-6004,Ashford Freight,2026-05-19,2026-06-18,8300.00,USD,
+INV-6005,Halvar Logistics,2026-07-15,2026-08-12,3600.00,USD,2026-07-30
+INV-6006,Halvar Logistics,2026-06-25,2026-07-23,4200.00,USD,2026-07-30

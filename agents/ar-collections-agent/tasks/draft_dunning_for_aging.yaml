@@ -1,0 +1,36 @@
+name: draft_dunning_for_aging
+description: >
+  Fetch a book of open invoices through an open-invoices connector, compute each
+  invoice's days overdue and aging bucket deterministically, flag the invoices
+  that warrant a collection action against a configurable DunningPolicy (days
+  overdue threshold, repeat-offender customers, minimum balance), draft a dunning
+  email for each flagged invoice whose tone tier (reminder / firm / formal) is
+  set deterministically from how overdue it is and grounded in
+  platform/knowledge collections-policy chunks (ungrounded when none are
+  relevant), and submit the full aging report plus the drafted emails for human
+  approval.
+inputs:
+  - source_system
+  - invoices_folder       # folder of open-invoice CSVs (invoice_id,customer,invoice_date,due_date,amount,currency,last_payment_date)
+  - knowledge_base        # pre-ingested platform/knowledge.KnowledgeBase
+  - as_of_date            # date the aging is computed against; default today
+  - model                 # default claude-sonnet-5
+  - effort                # default medium
+  - policy                # ar_collections_agent.DunningPolicy; default min_days_overdue=31, repeat_customer_min_overdue_invoices=2
+  - retrieval_top_k       # default 3 (chunks retrieved per flagged invoice)
+  - preparer              # default "ar-collections-agent"
+outputs:
+  - collections_report    # CollectionsReport: every aged invoice, flagged items, drafted dunning emails; see ar_collections_agent.models
+  - approval_request_id
+autonomy: draft_only
+connectors:
+  - erp: read (via platform/connectors FileOpenInvoiceConnector)
+knowledge_corpora:
+  - collections_policy
+audit_events:
+  - open_invoices_retrieved
+  - aging_computed                          # carries every invoice's bucket + the flagged invoices with the deterministic reason each was flagged
+  - dunning_context_retrieved               # or dunning_drafts_skipped (nothing flagged)
+  - dunning_drafts_drafted                  # or dunning_drafts_refused / dunning_drafts_failed
+  - collections_report_generated
+  - "approval_submitted:collections_report" # emitted by platform/approvals on submit

@@ -1,0 +1,6 @@
+invoice_id,customer,invoice_date,due_date,amount,currency,last_payment_date
+INV-7001,Pinnacle Retail,2026-04-01,2026-05-01,42000.00,USD,2026-05-15
+INV-7002,Pinnacle Retail,2026-04-20,2026-05-20,15750.00,USD,2026-05-15
+INV-7003,Pinnacle Retail,2026-04-25,2026-05-25,9200.00,USD,2026-05-15
+INV-7004,Voss Equipment,2026-05-25,2026-06-24,6100.00,USD,
+INV-7005,Wexler & Co,2026-08-20,2026-09-19,1200.00,USD,2026-08-18

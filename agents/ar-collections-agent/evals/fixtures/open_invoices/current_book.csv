@@ -1,0 +1,6 @@
+invoice_id,customer,invoice_date,due_date,amount,currency,last_payment_date
+INV-5001,Orwin Stationers,2026-08-10,2026-09-10,3200.00,USD,2026-08-05
+INV-5002,Belfry Cafes,2026-07-20,2026-08-19,1450.00,USD,2026-07-01
+INV-5003,Cazorla Print,2026-08-01,2026-08-31,8800.00,USD,
+INV-5004,Drayton Tools,2026-08-15,2026-09-14,640.00,USD,2026-08-20
+INV-5005,Orwin Stationers,2026-08-25,2026-09-24,500.00,USD,2026-08-05

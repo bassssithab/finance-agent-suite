@@ -1,0 +1,19 @@
+name: ar-collections-agent
+version: 0.1.0
+description: >
+  Accounts-receivable collections. Ages a book of open invoices deterministically
+  (days overdue + aging bucket), flags the invoices that warrant a collection
+  action against configurable rules (days overdue, repeat-offender customers),
+  drafts a dunning email for each flagged invoice whose tone escalates with how
+  overdue it is (grounded in platform/knowledge collections policy when
+  available), and submits the full aging report plus the drafted emails for
+  human approval. No email is ever sent by the agent.
+autonomy: draft_only
+connectors:
+  - erp: read           # open AR invoices, via platform/connectors FileOpenInvoiceConnector
+approval_rules:
+  external_effects: always_require_human
+knowledge_corpora:
+  - collections_policy
+tasks:
+  - draft_dunning_for_aging

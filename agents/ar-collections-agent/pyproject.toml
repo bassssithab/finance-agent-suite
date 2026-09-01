@@ -1,0 +1,13 @@
+[project]
+name = "ar-collections-agent"
+version = "0.1.0"
+description = "AR collections: deterministically ages a book of open invoices, flags invoices warranting a collection action against configurable rules, drafts tone-escalating cited dunning emails for the flagged ones, and routes the full report to human approval"
+requires-python = ">=3.11"
+# Own copy of the anthropic SDK, scoped to this agent's folder (CLAUDE.md rule
+# #5 — one agent per folder, shared logic only in platform/). This agent calls
+# the Claude API directly to draft dunning emails, same as agents/close-agent,
+# agents/controls-sox-agent and agents/ap-agent.
+dependencies = ["anthropic>=0.40,<1"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
