@@ -1,0 +1,18 @@
+name: fpa-agent
+version: 0.1.0
+description: >
+  Driver-based financial forecasting. Projects a set of historical actuals
+  forward N periods deterministically using a per-category growth assumption
+  (or a flat default), flags any line whose assumed growth rate implies an
+  unusually large period-over-period change, drafts a plain-English forecast
+  narrative that describes assumptions as assumptions and never presents the
+  projection as a guarantee, and submits the full forecast for human approval.
+autonomy: draft_only
+connectors:
+  - erp: read           # historical actuals, via platform/connectors FileBudgetActualConnector (actuals only)
+approval_rules:
+  external_effects: always_require_human
+knowledge_corpora:
+  - fpa_methodology
+tasks:
+  - project_driver_based_forecast

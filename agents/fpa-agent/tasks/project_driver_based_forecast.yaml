@@ -1,0 +1,35 @@
+name: project_driver_based_forecast
+description: >
+  Fetch a set of historical monthly actuals through a budget/actuals connector,
+  project every line item forward `horizon` periods from the most recent actual
+  period using a per-category growth assumption (or a flat default), flag any
+  line whose assumed growth rate implies an unusually large period-over-period
+  change (or that projects below zero, or whose base was carried forward), draft
+  a plain-English forecast narrative grounded in platform/knowledge FP&A
+  methodology when available (ungrounded otherwise), and submit the full forecast
+  for human approval.
+inputs:
+  - source_system
+  - actuals_folder        # folder of historical-actuals CSVs (period,account,line_item,category,amount,currency); monthly YYYY-MM periods
+  - knowledge_base        # pre-ingested platform/knowledge.KnowledgeBase
+  - assumptions           # fpa_agent.ForecastAssumptions; default default_growth=2%/period, max_pop_change_pct=25%
+  - horizon               # number of future periods to project; default 3
+  - model                 # default claude-sonnet-5
+  - effort                # default medium
+  - retrieval_top_k       # default 3
+  - preparer              # default "fpa-agent"
+outputs:
+  - forecast_report       # ForecastReport: all projected line items, flagged items, the drafted narrative; see fpa_agent.models
+  - approval_request_id
+autonomy: draft_only
+connectors:
+  - erp: read (via platform/connectors FileBudgetActualConnector, actuals folder only)
+knowledge_corpora:
+  - fpa_methodology
+audit_events:
+  - historical_actuals_retrieved
+  - forecast_projected                       # carries the assumptions used + every flagged line with its deterministic reason
+  - narrative_context_retrieved              # grounded (bool), chunk ids, citations
+  - forecast_narrative_drafted               # or forecast_narrative_refused / forecast_narrative_failed
+  - forecast_report_generated
+  - "approval_submitted:forecast"            # emitted by platform/approvals on submit

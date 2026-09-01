@@ -1,0 +1,7 @@
+period,account,line_item,category,amount,currency
+2026-04,4000,Product revenue,Revenue,820000.00,USD
+2026-04,4100,Services revenue,Revenue,145000.00,USD
+2026-04,5000,Cost of goods sold,Cost of sales,410000.00,USD
+2026-04,6000,Marketing — paid media,Operating expenses,62000.00,USD
+2026-04,6100,Payroll,Operating expenses,240000.00,USD
+2026-04,6300,Software subscriptions,Operating expenses,9500.00,USD

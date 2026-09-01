@@ -1,0 +1,6 @@
+period,account,line_item,category,amount,currency
+2026-06,4000,Product revenue,Revenue,851000.00,USD
+2026-06,4100,Services revenue,Revenue,152000.00,USD
+2026-06,5000,Cost of goods sold,Cost of sales,421000.00,USD
+2026-06,6000,Marketing — paid media,Operating expenses,63000.00,USD
+2026-06,6100,Payroll,Operating expenses,244000.00,USD

@@ -1,0 +1,13 @@
+[project]
+name = "fpa-agent"
+version = "0.1.0"
+description = "FP&A: projects historical actuals forward with per-category growth assumptions deterministically, flags high-sensitivity assumptions, drafts a plain-English forecast narrative that frames the projection as a projection, and routes the forecast to human approval"
+requires-python = ">=3.11"
+# Own copy of the anthropic SDK, scoped to this agent's folder (CLAUDE.md rule
+# #5 — one agent per folder, shared logic only in platform/). This agent calls
+# the Claude API directly to draft the forecast narrative, same as
+# agents/close-agent and agents/ar-collections-agent.
+dependencies = ["anthropic>=0.40,<1"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
