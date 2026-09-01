@@ -100,6 +100,39 @@ lines = connector.fetch_lines(period="2026-07")   # exact-match period filter
 Like the other connectors it never writes to `platform/audit-log` — the calling
 agent records what it retrieved in its own `AuditEvent`.
 
+## `FileOpenInvoiceConnector`
+
+Read-only stand-in for a real accounts-receivable / AR sub-ledger export, for
+agents that work from a book of open (unpaid or partly-paid) customer invoices.
+It reads CSVs from a folder and returns `OpenInvoice` records
+(`source_capability` is always `"open_invoices"`).
+
+Expected CSV schema:
+
+```
+invoice_id,customer,invoice_date,due_date,amount,currency,last_payment_date
+```
+
+`currency` and `last_payment_date` are optional — blank/missing `currency`
+becomes `"USD"`, blank/missing `last_payment_date` becomes `None`. `invoice_id`,
+`customer`, `invoice_date`, `due_date` and `amount` are required; a blank one
+raises `ConnectorParseError`. `amount` is the open balance as reported by the
+source (the connector does not derive it from cash applied).
+
+```python
+from connectors import FileOpenInvoiceConnector
+
+connector = FileOpenInvoiceConnector(
+    source_system="sample_co",
+    folder="./sample_data/open_invoices",
+)
+
+invoices = connector.fetch_invoices()   # sorted by (due_date, invoice_id)
+```
+
+Like the other connectors it never writes to `platform/audit-log` — the calling
+agent records what it retrieved in its own `AuditEvent`.
+
 ## Development
 
 ```bash

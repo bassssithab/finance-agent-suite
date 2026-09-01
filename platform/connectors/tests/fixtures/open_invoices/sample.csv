@@ -1,0 +1,5 @@
+invoice_id,customer,invoice_date,due_date,amount,currency,last_payment_date
+INV-2002,Bveroot Foods,2026-06-15,2026-07-15,4200.00,USD,2026-05-30
+INV-2001,Aldwe Retail,2026-07-01,2026-07-31,88000.00,USD,
+INV-2004,Ceflor Labs,2026-05-20,2026-06-19,950.00,,
+INV-2003,Bveroot Foods,2026-06-05,2026-07-05,15000.00,USD,2026-06-28

@@ -48,6 +48,33 @@ class BudgetActualLine:
 
 
 @dataclass(frozen=True)
+class OpenInvoice:
+    """One normalized open (unpaid or partly-paid) accounts-receivable invoice,
+    as exported from an ERP's AR sub-ledger.
+
+    Carries just enough to age the invoice and draft a collection message:
+    who owes it (`customer`), when it was raised and when it fell due, the
+    open `amount`, and — when the source records it — the date of the last
+    payment received against the account (`last_payment_date`, `None` when the
+    source leaves it blank). This connector does not derive the open amount
+    from cash applied (that is the ERP's job); an aging analysis only needs the
+    balance still outstanding. `raw` keeps the original CSV row so a normalized
+    record can always be traced back to the exact line it came from.
+    """
+
+    source_system: str
+    source_capability: str  # always "open_invoices"
+    invoice_id: str         # source's own id for the invoice, e.g. "INV-4102"
+    customer: str           # customer name/id, as given
+    invoice_date: date
+    due_date: date
+    amount: Decimal         # open balance as reported by the source
+    currency: str
+    last_payment_date: Optional[date]
+    raw: dict[str, str]
+
+
+@dataclass(frozen=True)
 class JournalEntry:
     """One normalized journal-entry header, as exported from an ERP's GL.
 

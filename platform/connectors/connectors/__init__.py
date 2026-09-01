@@ -8,7 +8,8 @@ from .document_connector import (
 )
 from .file_connector import FileConnector
 from .journal_entry_connector import FileJournalEntryConnector, JournalEntryConnector
-from .models import BudgetActualLine, JournalEntry, SourceDocument, Transaction
+from .open_invoice_connector import FileOpenInvoiceConnector, OpenInvoiceConnector
+from .models import BudgetActualLine, JournalEntry, OpenInvoice, SourceDocument, Transaction
 
 __all__ = [
     "BudgetActualConnector",
@@ -20,8 +21,11 @@ __all__ = [
     "FileDocumentConnector",
     "FileConnector",
     "FileJournalEntryConnector",
+    "FileOpenInvoiceConnector",
     "JournalEntry",
     "JournalEntryConnector",
+    "OpenInvoice",
+    "OpenInvoiceConnector",
     "SourceDocument",
     "Transaction",
     "UnknownDocumentError",
