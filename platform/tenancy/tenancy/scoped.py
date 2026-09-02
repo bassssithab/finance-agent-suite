@@ -17,11 +17,27 @@ The rules that make it hard to get wrong:
 In a real deployment this is the hand-rolled stand-in for Postgres
 row-level security (see docs/ARCHITECTURE.md, "Multi-tenant, row-level
 security").
+
+Activity logging: `insert` writes one `tenancy.scoped_insert` event to the
+injected `audit_log.AuditLogStore` (the same hash-chained, tamper-evident
+store the agents use). Reads (`all` / `get`) are deliberately NOT logged —
+a scoped read happens on nearly every request and logging them would swamp
+the chain; writes are the state changes worth an immutable trail. The event
+records the table, tenant_id, and column names — never the row values.
 """
 
 import re
 import sqlite3
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Optional
+
+_audit_log_dir = Path(__file__).resolve().parent.parent.parent / "audit-log"
+if str(_audit_log_dir) not in sys.path:
+    sys.path.insert(0, str(_audit_log_dir))
+
+from audit_log import AuditEvent, AuditLogStore  # noqa: E402
 
 from .models import TenantScope
 
@@ -60,12 +76,31 @@ class ScopedTable:
     `tenant_id TEXT NOT NULL` column, and any number of other columns.
     """
 
-    def __init__(self, conn: sqlite3.Connection, table: str):
+    def __init__(
+        self,
+        conn: sqlite3.Connection,
+        table: str,
+        audit_log: AuditLogStore,
+    ):
         self._conn = conn
         self._table = _check_identifier(table, "table")
+        self._audit_log = audit_log
 
-    def insert(self, scope: Any, **fields: Any) -> int:
-        """Insert a row, stamping tenant_id from the scope. Returns the new id."""
+    def insert(
+        self,
+        scope: Any,
+        *,
+        actor: Optional[str] = None,
+        now: Optional[datetime] = None,
+        **fields: Any,
+    ) -> int:
+        """Insert a row, stamping tenant_id from the scope. Returns the new id.
+
+        `actor` and `now` are keyword-only and are used only for the audit
+        event (a `tenancy.scoped_insert`); a missing `actor` is logged as
+        "unknown". Because they are keyword-only they cannot be inserted as
+        row columns — no `ledger_notes`-style table has such columns anyway.
+        """
         _require_scope(scope)
         if "tenant_id" in fields:
             raise ValueError(
@@ -81,7 +116,21 @@ class ScopedTable:
             values,
         )
         self._conn.commit()
-        return cursor.lastrowid
+        row_id = cursor.lastrowid
+
+        self._audit_log.append(AuditEvent(
+            timestamp=(now or datetime.now(timezone.utc)).isoformat(),
+            agent="platform/tenancy",
+            action="tenancy.scoped_insert",
+            actor=actor or "unknown",
+            inputs={
+                "table": self._table,
+                "tenant_id": scope.tenant_id,
+                "columns": sorted(fields),  # names only — never the row values
+            },
+            output={"row_id": row_id},
+        ))
+        return row_id
 
     def all(self, scope: Any) -> list[dict]:
         """Return every row belonging to the scope's tenant, as dicts."""

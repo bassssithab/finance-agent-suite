@@ -18,6 +18,11 @@ logged-in user only ever sees their own tenant's rows, because every read
 goes through tenancy.ScopedTable with a WHERE tenant_id = ? composed from
 the session's TenantScope.
 
+Every authenticate / validate / logout and every scoped write is recorded
+in a real audit_log.AuditLogStore (hash-chained, tamper-evident) — shown in
+the "Activity log" panel, with a live verify_chain() check. Passwords and
+raw tokens are never logged.
+
 Run:  streamlit run infra_login_demo.py
 
 Fictional users/organizations only (reused from
@@ -40,10 +45,12 @@ for _path in (
     PLATFORM / "session",
     PLATFORM / "auth",
     PLATFORM / "tenancy",
+    PLATFORM / "audit-log",
 ):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
 
+from audit_log import AuditLogStore  # noqa: E402
 from auth import AuthStore  # noqa: E402
 from session import AuthenticatedSession, AuthFailure, SessionService  # noqa: E402
 from tenancy import ScopedTable, TenancyStore  # noqa: E402
@@ -101,13 +108,18 @@ class _Infra:
         d = Path(_infra_dir())
         self.auth_store = AuthStore(d / "auth.db")
         self.tenancy_store = TenancyStore(d / "tenancy.db")
-        self.service = SessionService(self.auth_store, self.tenancy_store)
+        # One hash-chained activity log, shared by the service and the table
+        # (temp file, not :memory:, so it survives Streamlit reruns).
+        self.audit_log = AuditLogStore(d / "audit.db")
+        self.service = SessionService(
+            self.auth_store, self.tenancy_store, self.audit_log
+        )
 
         self._notes_path = d / "notes.db"
         notes_conn = sqlite3.connect(self._notes_path)
         notes_conn.executescript(_NOTES_SCHEMA)
         notes_conn.commit()
-        self.notes = ScopedTable(notes_conn, _NOTES_TABLE)
+        self.notes = ScopedTable(notes_conn, _NOTES_TABLE, self.audit_log)
 
         self._seed_once()
 
@@ -126,7 +138,7 @@ class _Infra:
         for tenant_id, rows in _SEED_NOTES.items():
             scope = self.tenancy_store.scope_for(tenant_id)
             for author, text in rows:
-                self.notes.insert(scope, author=author, text=text)
+                self.notes.insert(scope, actor="seed", author=author, text=text)
 
     def tenant_note_counts(self) -> list[tuple[str, int]]:
         """Raw, scope-BYPASSING count per tenant — for the 'prove it' panel only."""
@@ -209,7 +221,7 @@ def render_logged_in(infra: _Infra, session: AuthenticatedSession) -> None:
     st.caption(f"role: `{session.user.role.value}`  ·  token persisted in st.session_state")
 
     if st.button("Log out"):
-        infra.auth_store.logout(session.token)  # no SessionService.logout() yet
+        infra.service.logout(session.token)  # emits a session.logout audit event
         del st.session_state["session_token"]
         st.rerun()
 
@@ -231,7 +243,12 @@ def render_logged_in(infra: _Infra, session: AuthenticatedSession) -> None:
         text = st.text_input("New note")
         add = st.form_submit_button("Add note")
     if add and text.strip():
-        infra.notes.insert(session.scope, author=session.user.username, text=text.strip())
+        infra.notes.insert(
+            session.scope,
+            actor=session.user.username,
+            author=session.user.username,
+            text=text.strip(),
+        )
         st.rerun()
 
     with st.expander("Prove the isolation"):
@@ -249,6 +266,26 @@ def render_logged_in(infra: _Infra, session: AuthenticatedSession) -> None:
             "Log out and log back in as a user from a different tenant "
             "(`farah.globex`) — the scoped list above becomes a disjoint set."
         )
+
+    with st.expander("Activity log"):
+        st.caption(
+            "Every authenticate / validate / logout and every scoped write is "
+            "recorded in the same hash-chained, tamper-evident "
+            "`audit_log.AuditLogStore` the agents use. Passwords and raw tokens "
+            "are never in it — only a `sha256[:12]` token fingerprint."
+        )
+        events = infra.audit_log.get_all()
+        st.table(
+            [{"action": e.action, "actor": e.actor} for e in events[-15:]]
+        )
+        chain = infra.audit_log.verify_chain()
+        if chain.ok:
+            st.success(f"verify_chain() → ok ({len(events)} events, chain intact)")
+        else:
+            st.error(
+                f"verify_chain() → broken at record {chain.broken_record_id}: "
+                f"{chain.reason}"
+            )
 
 
 # --------------------------------------------------------------------------

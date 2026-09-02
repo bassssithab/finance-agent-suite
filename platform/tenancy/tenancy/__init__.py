@@ -7,18 +7,22 @@ NOT imported by app.py or any agent yet. It provides:
 - one-tenant-per-user membership, associating an auth.User with exactly
   one Tenant
 - TenantScope, a capability object, plus a ScopedTable helper that makes
-  the `WHERE tenant_id = ?` filter structurally unforgettable
+  the `WHERE tenant_id = ?` filter structurally unforgettable, and writes a
+  tamper-evident audit event on every scoped write
 
-`auth` is put on sys.path here (the same trick auth uses for `../approvals`)
-so callers can associate real auth.User objects with tenants.
+`auth` and `audit-log` are put on sys.path here (the same trick auth uses
+for `../approvals`) so callers can associate real auth.User objects with
+tenants and inject a real AuditLogStore into ScopedTable.
 """
 
 import sys
 from pathlib import Path
 
-_auth_dir = Path(__file__).resolve().parent.parent.parent / "auth"
-if str(_auth_dir) not in sys.path:
-    sys.path.insert(0, str(_auth_dir))
+_platform = Path(__file__).resolve().parent.parent.parent
+for _dep in ("auth", "audit-log"):
+    _p = str(_platform / _dep)
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 from .models import Membership, Tenant, TenantScope  # noqa: E402
 from .scoped import MissingTenantScope, ScopedTable  # noqa: E402

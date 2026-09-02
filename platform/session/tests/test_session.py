@@ -1,8 +1,11 @@
+import json
 import sqlite3
+from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from audit_log import AuditLogStore
 from auth import AuthStore
 from tenancy import ScopedTable, TenantScope, TenancyStore
 from session import AuthenticatedSession, AuthFailure, SessionService
@@ -32,16 +35,38 @@ def tenancy_store(tmp_path, auth_store):
 
 
 @pytest.fixture
-def svc(auth_store, tenancy_store):
-    return SessionService(auth_store, tenancy_store)
+def audit_log(tmp_path):
+    log = AuditLogStore(tmp_path / "audit.db")
+    yield log
+    log.close()
+
+
+@pytest.fixture(autouse=True)
+def _audit_chain_stays_intact(audit_log):
+    """Every test in this module — old and new — leaves the hash chain valid."""
+    yield
+    assert audit_log.verify_chain().ok is True
 
 
 @pytest.fixture
-def notes(tmp_path):
+def svc(auth_store, tenancy_store, audit_log):
+    return SessionService(auth_store, tenancy_store, audit_log)
+
+
+@pytest.fixture
+def notes(tmp_path, audit_log):
     conn = sqlite3.connect(tmp_path / "demo.db")
     conn.executescript(LEDGER_NOTES_SCHEMA)
-    yield ScopedTable(conn, "ledger_notes")
+    yield ScopedTable(conn, "ledger_notes", audit_log)
     conn.close()
+
+
+def _actions(audit_log):
+    return [e.action for e in audit_log.get_all()]
+
+
+def _serialized_events(audit_log):
+    return json.dumps([asdict(e) for e in audit_log.get_all()], default=str)
 
 
 def _password(username):
@@ -172,3 +197,94 @@ def test_validate_reflects_a_tenant_assigned_after_login(svc, auth_store, tenanc
     assert isinstance(result, AuthenticatedSession)
     assert result.tenant_id == "acme-books"
     assert isinstance(svc.validate(result.token), AuthenticatedSession)
+
+
+# ---------------------------------------------------------------------------
+# Activity logging
+# ---------------------------------------------------------------------------
+
+def test_successful_login_is_audited(svc, audit_log):
+    svc.authenticate("dana.acme", _password("dana.acme"))
+
+    events = audit_log.get_all()
+    assert len(events) == 1
+    event = events[0]
+    assert event.action == "session.login.succeeded"
+    assert event.agent == "platform/session"
+    assert event.actor == "dana.acme"
+    assert event.output["tenant_id"] == "acme-books"
+    assert event.output["role"] == "approver"
+    assert len(event.output["token_fingerprint"]) == 12
+
+
+def test_password_is_never_written_to_the_audit_log(svc, audit_log):
+    secret = _password("dana.acme")
+    svc.authenticate("dana.acme", secret)              # success path
+    svc.authenticate("dana.acme", "not-the-password")  # failure path
+    svc.authenticate("dana.acme", secret)              # success again
+
+    assert secret not in _serialized_events(audit_log)
+
+
+def test_bad_credentials_and_no_tenant_are_distinct_audit_actions(svc, audit_log):
+    svc.authenticate("dana.acme", "wrong")
+    svc.authenticate("newbie.unassigned", _password("newbie.unassigned"))
+    svc.authenticate("nobody.here", "whatever")
+
+    assert _actions(audit_log) == [
+        "session.login.failed.bad_credentials",
+        "session.login.failed.no_tenant",
+        "session.login.failed.bad_credentials",
+    ]
+
+
+def test_no_tenant_login_audits_once_and_logs_no_logout(svc, audit_log, tmp_path):
+    svc.authenticate("newbie.unassigned", _password("newbie.unassigned"))
+
+    assert _actions(audit_log) == ["session.login.failed.no_tenant"]
+    assert "session.logout" not in _actions(audit_log)
+    assert _session_row_count(tmp_path) == 0  # token still rolled back
+
+
+def test_validate_outcomes_are_audited(svc, audit_log):
+    issued = datetime(2026, 9, 2, 12, 0, 0, tzinfo=timezone.utc)
+    session = svc.authenticate("dana.acme", _password("dana.acme"),
+                               ttl_seconds=60, now=issued)
+
+    svc.validate(session.token, now=issued + timedelta(seconds=10))   # live
+    svc.validate(session.token, now=issued + timedelta(hours=1))      # expired
+    svc.validate("not-a-real-token", now=issued)                      # garbage
+
+    assert _actions(audit_log) == [
+        "session.login.succeeded",
+        "session.validate.succeeded",
+        "session.validate.failed.invalid_token",
+        "session.validate.failed.invalid_token",
+    ]
+    assert session.token not in _serialized_events(audit_log)
+
+
+def test_logout_is_audited(svc, audit_log):
+    session = svc.authenticate("farah.globex", _password("farah.globex"))
+    svc.logout(session.token)
+
+    assert _actions(audit_log) == ["session.login.succeeded", "session.logout"]
+    logout_event = audit_log.get_all()[-1]
+    assert logout_event.actor == "farah.globex"
+    assert session.token not in _serialized_events(audit_log)
+
+
+def test_audit_chain_intact_across_a_full_flow(svc, notes, audit_log):
+    session = svc.authenticate("dana.acme", _password("dana.acme"))
+    revalidated = svc.validate(session.token)
+    notes.insert(revalidated.scope, actor=session.user.username,
+                 author="dana.acme", text="flow note")
+    svc.logout(session.token)
+
+    assert _actions(audit_log) == [
+        "session.login.succeeded",
+        "session.validate.succeeded",
+        "tenancy.scoped_insert",
+        "session.logout",
+    ]
+    assert audit_log.verify_chain().ok is True

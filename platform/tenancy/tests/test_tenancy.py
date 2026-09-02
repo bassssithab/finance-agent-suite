@@ -1,7 +1,10 @@
+import json
 import sqlite3
+from dataclasses import asdict
 
 import pytest
 
+from audit_log import AuditLogStore
 from auth import AuthStore
 from tenancy import (
     AlreadyAssigned,
@@ -43,11 +46,29 @@ def assigned_store(store, auth_store):
 
 
 @pytest.fixture
-def notes(tmp_path):
+def audit_log(tmp_path):
+    log = AuditLogStore(tmp_path / "audit.db")
+    yield log
+    log.close()
+
+
+@pytest.fixture(autouse=True)
+def _audit_chain_stays_intact(audit_log):
+    """Every test in this module — old and new — leaves the hash chain valid."""
+    yield
+    assert audit_log.verify_chain().ok is True
+
+
+@pytest.fixture
+def notes(tmp_path, audit_log):
     conn = sqlite3.connect(tmp_path / "demo.db")
     conn.executescript(LEDGER_NOTES_SCHEMA)
-    yield ScopedTable(conn, "ledger_notes")
+    yield ScopedTable(conn, "ledger_notes", audit_log)
     conn.close()
+
+
+def _serialized_events(audit_log):
+    return json.dumps([asdict(e) for e in audit_log.get_all()], default=str)
 
 
 # ---------------------------------------------------------------------------
@@ -166,3 +187,64 @@ def test_tenant_round_trips(store):
     tenant = store.get_tenant("initech-partners")
     assert tenant.display_name == "Initech Partners"
     assert tenant.created_at
+
+
+# ---------------------------------------------------------------------------
+# Activity logging
+# ---------------------------------------------------------------------------
+
+def test_scoped_insert_is_audited(assigned_store, notes, audit_log):
+    scope = assigned_store.scope_for("acme-books")
+    row_id = notes.insert(scope, actor="dana.acme", author="dana.acme", text="hello")
+
+    events = audit_log.get_all()
+    assert len(events) == 1
+    event = events[0]
+    assert event.action == "tenancy.scoped_insert"
+    assert event.agent == "platform/tenancy"
+    assert event.actor == "dana.acme"
+    assert event.inputs == {
+        "table": "ledger_notes",
+        "tenant_id": "acme-books",
+        "columns": ["author", "text"],  # names only, sorted
+    }
+    assert event.output == {"row_id": row_id}
+
+
+def test_insert_does_not_log_the_row_values(assigned_store, notes, audit_log):
+    scope = assigned_store.scope_for("globex-finance")
+    notes.insert(
+        scope, actor="farah.globex", author="farah.globex",
+        text="Globex confidential margin target 42 percent",
+    )
+    assert "confidential margin target" not in _serialized_events(audit_log)
+
+
+def test_scoped_reads_are_not_audited(assigned_store, notes, audit_log):
+    scope = assigned_store.scope_for("acme-books")
+    notes.insert(scope, actor="dana.acme", author="dana.acme", text="one")
+    assert len(audit_log.get_all()) == 1
+
+    notes.all(scope)
+    notes.get(scope, 1)
+    notes.all(scope)
+
+    # Still just the single insert event — reads add nothing.
+    assert len(audit_log.get_all()) == 1
+
+
+def test_insert_without_an_actor_is_logged_as_unknown(assigned_store, notes, audit_log):
+    scope = assigned_store.scope_for("acme-books")
+    notes.insert(scope, author="dana.acme", text="no actor given")
+    assert audit_log.get_all()[0].actor == "unknown"
+
+
+def test_audit_chain_intact_after_cross_tenant_writes(assigned_store, notes, audit_log):
+    scope_a = assigned_store.scope_for("acme-books")
+    scope_b = assigned_store.scope_for("globex-finance")
+    for i in range(3):
+        notes.insert(scope_a, actor="dana.acme", author="dana.acme", text=f"a{i}")
+        notes.insert(scope_b, actor="farah.globex", author="farah.globex", text=f"b{i}")
+
+    assert len(audit_log.get_all()) == 6
+    assert audit_log.verify_chain().ok is True
