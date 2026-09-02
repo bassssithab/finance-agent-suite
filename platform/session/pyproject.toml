@@ -1,0 +1,9 @@
+[project]
+name = "session"
+version = "0.1.0"
+description = "Prototype combined authentication + tenancy flow (one-call login returning a token, User, and ready-to-use TenantScope) for the finance-agent-suite platform chassis — not yet wired into any app or agent"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
