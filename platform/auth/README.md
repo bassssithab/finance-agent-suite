@@ -44,8 +44,10 @@ so session expiry is testable without sleeping.
 
 ## Not in this prototype
 
-- audit-log wiring (login success/failure events) — the deliberate next
-  step if this graduates from prototype
+- direct audit-log writes from `AuthStore` — `platform/session` composes
+  this store into a flow that logs every login / validate / logout to the
+  shared `audit_log.AuditLogStore`; `AuthStore` on its own stays
+  storage-only
 - password strength rules, rate limiting / lockout, token refresh,
   expired-session cleanup, FastAPI routes
 

@@ -50,6 +50,71 @@ Pluggable adapters, one interface per capability:
   human approver, timestamp
 - Exportable as auditor-readable evidence packs
 
+## Identity & Access (prototype)
+
+A layer distinct from the core chassis above. The four chassis components —
+connectors, knowledge, approvals, audit-log — are what all twelve agents
+run on. The three modules here are **not** part of that chassis: they are a
+prototype identity/access layer, **not wired into `app.py` or any agent**,
+built and tested entirely on fictional users and organizations, no real
+company data. They work out how sign-in and per-organization data isolation
+should fit the chassis before any of it becomes load-bearing.
+
+### Composition
+
+Three modules, composed in one direction:
+
+```
+platform/auth      identity      username + PBKDF2-hashed password (never
+                                 plaintext) + random session tokens (only
+                                 the token's hash is stored)
+      │
+platform/tenancy   organization  one Tenant per user; a TenantScope
+                                 capability object + ScopedTable make the
+                                 `WHERE tenant_id = ?` filter structurally
+                                 unforgettable — the hand-rolled stand-in
+                                 for Postgres row-level security
+      │
+platform/session   usable flow   SessionService.authenticate() runs the
+                                 auth login, then resolves the user's
+                                 tenant, and returns one bundle: session
+                                 token + User + ready-to-use TenantScope.
+                                 validate() re-derives that bundle from a
+                                 token alone; logout() ends it.
+```
+
+`auth.Role` is reused from `platform/approvals`, so the chassis keeps one
+role vocabulary (`preparer` / `reviewer` / `approver`).
+
+### Audit trail
+
+All three write to the same append-only, hash-chained `AuditLogStore` the
+agents use (the audit-log component above), injected as a constructor
+parameter — never constructed internally:
+
+- `session.authenticate` → `session.login.succeeded` /
+  `session.login.failed.bad_credentials` / `session.login.failed.no_tenant`
+- `session.validate` → `session.validate.succeeded` /
+  `session.validate.failed.invalid_token` /
+  `session.validate.failed.no_tenant`
+- `session.logout` → `session.logout`
+- `tenancy.ScopedTable.insert` → `tenancy.scoped_insert` (scoped **writes**
+  only; reads are deliberately not logged, to keep the chain's volume sane)
+
+Passwords are never logged. Raw session tokens are never logged — events
+carry a `sha256(token)[:12]` fingerprint, enough to correlate one session's
+events but not to replay it from an exported evidence pack.
+
+### Demonstration
+
+`infra_login_demo.py` (repo root) is a standalone Streamlit app for this
+layer, separate from `app.py`. It seeds the fictional users and tenants in
+throwaway SQLite, runs the real `SessionService`, shows all three
+`authenticate` outcomes (success, bad credentials, valid-but-unassigned),
+persists login across reruns via a token in `st.session_state`, and
+includes a tenant-scoped notes demo and an "Activity log" panel with a live
+`verify_chain()` check. Run: `streamlit run infra_login_demo.py`.
+
 ## Agent contract
 
 Each agent folder must contain:
