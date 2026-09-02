@@ -99,3 +99,22 @@ This is a standalone script (not collected by pytest, never run in CI) that
 ingests the same synthetic fixture, classifies one line item, and prints the
 retrieved chunks, the drafted answer with citations, and the resulting
 approval request — plus the audit log's hash-chain verification.
+
+## Private UAE VAT reference (not wired in)
+
+`evals/fixtures_uae.py` is a **standalone, local-only** knowledge corpus for
+**real UAE VAT** (`corpus="vat_policy_uae"`), entirely separate from the
+fictional Larenthia corpus (`evals/fixtures.py`) that powers the demo and the
+eval suite. It is:
+
+- **Not verified** — drafted from secondary sources (accounting-firm guides, tax
+  advisory sites), not yet checked against the FTA's primary Executive
+  Regulations or Public Clarifications.
+- **Not imported anywhere** — no test, `manual_live_run.py`, or `app.py`
+  references it, and its document list is `ALL_DOCUMENTS_UAE` (not
+  `ALL_DOCUMENTS`) so `app.py`'s `_load_fixture_module` loader cannot pick it up.
+- **Private use only** — it answers real questions about a real tax system and
+  stays local until independently verified.
+
+See the module docstring for the full caveat and the primary instruments it
+summarises.
