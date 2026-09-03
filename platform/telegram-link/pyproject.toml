@@ -1,0 +1,9 @@
+[project]
+name = "telegram-link"
+version = "0.1.0"
+description = "Prototype linking layer: securely associate a Telegram chat_id with an auth.User via one-time codes — no real Telegram bot wired in yet"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
