@@ -6,22 +6,30 @@
     └───────────────────────────────────────────────────────────────┘
 
 Proves real Telegram connectivity + real identity resolution via
-platform/telegram-link. It does NOT read message content, handle
-attachments, extract expense data, or draft anything — every reply says so.
-That is a separate, later step.
+platform/telegram-link, and routes a LINKED user's photo to the right agent.
 
-On each message:
+On a text message:
   - linked chat         -> "Hi {username}, message received — I'm not
                             processing content yet, just confirming who you are."
   - unlinked + a code    -> redeem it; friendly success / failure reply
   - unlinked + anything  -> instructions on how to link
 
-The bot token comes from the TELEGRAM_BOT_TOKEN environment variable (or a
-KEY=VALUE line in ./.env) — never hardcoded, the same handling pattern as
-ANTHROPIC_API_KEY.
+On a photo from a LINKED user (see telegram_bot_photo.py):
+  - caption keywords ("expense"/"receipt" vs "invoice"/"purchase"/"bill")
+    route directly; otherwise one Claude vision call classifies it, and an
+    "unclear" result asks the user to resend with a caption
+  - the routed agent (expense-agent / ap-agent) drafts and submits through
+    platform/approvals with the linked user as preparer
+  - stops at drafted + submitted — no Zoho, no ERP write
+  - without ANTHROPIC_API_KEY the photo is acknowledged with a clear message,
+    not processed, not crashed
+
+Tokens/keys come from the environment (or KEY=VALUE lines in ./.env) —
+TELEGRAM_BOT_TOKEN and ANTHROPIC_API_KEY, never hardcoded.
 
     pip install -r requirements-telegram.txt
     export TELEGRAM_BOT_TOKEN=...             # from @BotFather, or put in ./.env
+    export ANTHROPIC_API_KEY=...              # optional; needed for photo processing
 
     python telegram_bot_prototype.py gencode dana.acme   # mint a linking code
     python telegram_bot_prototype.py run                 # start the bot (default)
@@ -57,6 +65,14 @@ from telegram_link import (  # noqa: E402
 
 DATA_DIR = ROOT / "telegram_bot_prototype_data"
 _TOKEN_ENV = "TELEGRAM_BOT_TOKEN"
+_ANTHROPIC_KEY_ENV = "ANTHROPIC_API_KEY"
+
+
+def anthropic_key():
+    """The Claude API key from the environment (or ./.env), or None. Same
+    handling as the bot token — never hardcoded."""
+    key = os.environ.get(_ANTHROPIC_KEY_ENV)
+    return key.strip() if key and key.strip() else None
 
 _INSTRUCTIONS = (
     "You're not linked yet. To connect this Telegram chat to your account, "
@@ -209,6 +225,8 @@ def cmd_run() -> int:
         filters,
     )
 
+    import telegram_bot_photo as photo  # heavy (agents + anthropic) — load only when running
+
     stores = Stores()
 
     async def on_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -233,21 +251,61 @@ def cmd_run() -> int:
         _console_log(chat_id, "text", reply)
         await update.message.reply_text(reply)
 
-    async def on_attachment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    async def on_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        chat_id = update.effective_chat.id
+        user = stores.links.resolve_chat_id(chat_id)
+        if user is None:
+            _console_log(chat_id, "photo", "not linked -> instructions")
+            await update.message.reply_text(_INSTRUCTIONS)
+            return
+
+        key = anthropic_key()
+        if not key:
+            reply = (
+                f"📷 Got your photo, {user.username}. I can't read images yet — "
+                f"{_ANTHROPIC_KEY_ENV} isn't configured. Your photo wasn't lost; "
+                "resend once it's set up."
+            )
+            _console_log(chat_id, "photo", "no api key")
+            await update.message.reply_text(reply)
+            return
+
+        await update.message.reply_text(f"📄 Got it, {user.username} — reading the photo…")
+        tg_file = await context.bot.get_file(update.message.photo[-1].file_id)
+        jpeg = bytes(await tg_file.download_as_bytearray())
+
+        import anthropic
+
+        # Synchronous: this blocks the event loop for ~15-30s (vision extract +
+        # retrieval + drafting). Acceptable for a local single-user prototype;
+        # the ack above keeps the UX honest.
+        reply = photo.process_photo(
+            client=anthropic.Anthropic(api_key=key),
+            jpeg_bytes=jpeg,
+            caption=update.message.caption,
+            username=user.username,
+            chat_id=chat_id,
+            persistent_audit_log=stores.audit_log,
+        )
+        _console_log(chat_id, "photo", reply)
+        await update.message.reply_text(reply)
+
+    async def on_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         chat_id = update.effective_chat.id
         user = stores.links.resolve_chat_id(chat_id)
         who = f"Hi {user.username}, " if user is not None else ""
         reply = (
-            f"{who}I received your photo/file, but I don't process attachments "
-            "yet — this prototype only confirms identity."
+            f"{who}send that as a *photo* rather than a file and I'll try to "
+            "read it. (Attachment/document handling isn't built yet.)"
         )
-        _console_log(chat_id, "attachment", reply)
+        _console_log(chat_id, "document", reply)
         await update.message.reply_text(reply)
 
     app = Application.builder().token(token).build()
     app.add_handler(CommandHandler("start", on_start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
-    app.add_handler(MessageHandler(filters.PHOTO | filters.Document.ALL, on_attachment))
+    app.add_handler(MessageHandler(filters.PHOTO, on_photo))
+    app.add_handler(MessageHandler(filters.Document.ALL, on_document))
 
     print(f"telegram_bot_prototype: polling. state in {DATA_DIR}/  (Ctrl-C to stop)",
           flush=True)

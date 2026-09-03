@@ -14,3 +14,10 @@
 # API is stable across 21-22.
 
 python-telegram-bot>=21,<23
+
+# Also used by the bot once a linked user sends a photo: the routed agent
+# (expense-agent / ap-agent) makes real Claude vision calls, and the caption
+# fallback makes one classification call. `anthropic` is already the agents'
+# and app.py's dependency; repeated here because this prototype imports it
+# directly, same as requirements.txt does for app.py.
+anthropic>=0.40,<1
