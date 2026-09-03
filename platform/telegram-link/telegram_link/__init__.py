@@ -35,6 +35,7 @@ for _dep in ("auth", "audit-log"):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
+from .codes import looks_like_code  # noqa: E402
 from .models import TelegramLink  # noqa: E402
 from .store import (  # noqa: E402
     ChatAlreadyLinked,
@@ -57,4 +58,5 @@ __all__ = [
     "LinkCodeExpired",
     "ChatAlreadyLinked",
     "NoActiveLink",
+    "looks_like_code",
 ]

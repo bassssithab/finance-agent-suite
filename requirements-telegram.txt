@@ -1,0 +1,16 @@
+# Dependency for the LOCAL-ONLY Telegram bot prototype (telegram_bot_prototype.py).
+#
+# Kept out of requirements.txt (that file is for the Streamlit demo, app.py) and
+# out of platform/telegram-link/pyproject.toml (that module is the linking state
+# machine and deliberately has no bot). Same scoping discipline as `anthropic`
+# living only where it's used (CLAUDE.md rule #5).
+#
+# Why python-telegram-bot rather than raw HTTP: the prototype needs a real,
+# working bot — receiving live updates and replying. python-telegram-bot is the
+# de-facto-standard Python client for the Bot API: actively maintained, async,
+# and it provides the update dispatcher (handlers, filters, long-poll + backoff,
+# rate-limit handling) so we don't hand-roll a getUpdates loop with offset
+# bookkeeping against api.telegram.org. v21+ is async; the Application builder
+# API is stable across 21-22.
+
+python-telegram-bot>=21,<23

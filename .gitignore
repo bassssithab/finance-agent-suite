@@ -7,3 +7,4 @@ node_modules/
 *.db
 *.sqlite3
 .streamlit/secrets.toml
+telegram_bot_prototype_data/

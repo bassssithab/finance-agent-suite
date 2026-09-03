@@ -23,6 +23,13 @@ for dir in platform/*/ agents/*/; do
   fi
 done
 
+# Root-level prototype test files (telegram_bot_prototype.py etc.) — each run
+# on its own, same reason as the modules above.
+for root_test in test_*.py; do
+  [ -e "$root_test" ] || continue
+  modules+=("$root_test")
+done
+
 failed=()
 for module in "${modules[@]}"; do
   echo "=================== $module ==================="

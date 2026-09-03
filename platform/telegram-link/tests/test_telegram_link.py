@@ -14,7 +14,9 @@ from telegram_link import (
     NoActiveLink,
     TelegramLinkStore,
     UnknownUser,
+    looks_like_code,
 )
+from telegram_link.codes import new_code
 
 from fixtures import ADMIN, CHAT_DANA, CHAT_FARAH, CHAT_SPARE, FICTIONAL_USERS
 
@@ -226,3 +228,30 @@ def test_normalization_tolerates_surrounding_whitespace(store):
     code = store.generate_link_code("dana.acme")
     store.redeem_link_code(f"  {code}\n", CHAT_DANA)
     assert store.resolve_chat_id(CHAT_DANA).username == "dana.acme"
+
+
+# ---------------------------------------------------------------------------
+# looks_like_code — the routing hint used by the Telegram bot
+# ---------------------------------------------------------------------------
+
+def test_looks_like_code_accepts_real_codes():
+    for _ in range(50):
+        assert looks_like_code(new_code())
+    assert looks_like_code("  xK3p_2Qz9Ab-  ")  # trims whitespace first
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "",
+        "hello there",
+        "please link me",
+        "abc",                       # too short
+        "A" * 11,                    # 11 chars
+        "A" * 13,                    # 13 chars
+        "xK3p 2Qz9Ab-",              # embedded space
+        "xK3p/2Qz9Ab+",             # not urlsafe alphabet
+    ],
+)
+def test_looks_like_code_rejects_non_codes(text):
+    assert not looks_like_code(text)

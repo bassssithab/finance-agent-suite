@@ -31,7 +31,9 @@ store.revoke_link(700001, revoked_by="admin.root")  # chat_id now resolves to No
 ## Guarantees
 
 - **Codes are unguessable** — `secrets.token_urlsafe`, 12 chars (~72 bits),
-  not sequential, not time-derived.
+  not sequential, not time-derived. `looks_like_code(text)` reports whether
+  a string is shaped like one (a routing hint for a chat bot — not
+  validation).
 - **Codes are single-use** — consumed on redemption; a second redemption
   raises `LinkCodeAlreadyUsed`. Generating a new code for a user drops that
   user's previous unused one (one live code per user).
