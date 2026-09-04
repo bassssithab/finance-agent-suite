@@ -25,7 +25,7 @@ for _dep in ("auth", "audit-log"):
         sys.path.insert(0, _p)
 
 from .models import Membership, Tenant, TenantScope  # noqa: E402
-from .scoped import MissingTenantScope, ScopedTable  # noqa: E402
+from .scoped import MissingTenantScope, ScopedTable, require_scope  # noqa: E402
 from .store import (  # noqa: E402
     AlreadyAssigned,
     NoMembership,
@@ -40,6 +40,7 @@ __all__ = [
     "TenantScope",
     "MissingTenantScope",
     "ScopedTable",
+    "require_scope",
     "TenancyStore",
     "AlreadyAssigned",
     "NoMembership",

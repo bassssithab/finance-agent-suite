@@ -41,19 +41,22 @@ from audit_log import AuditEvent, AuditLogStore  # noqa: E402
 
 from .models import TenantScope
 
-__all__ = ["MissingTenantScope", "ScopedTable"]
+__all__ = ["MissingTenantScope", "ScopedTable", "require_scope"]
 
 _IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 class MissingTenantScope(Exception):
-    """Raised when a scoped query is attempted without a valid TenantScope."""
+    """Raised when a scoped operation is attempted without a valid TenantScope."""
 
 
-def _require_scope(scope: Any) -> TenantScope:
+def require_scope(scope: Any) -> TenantScope:
+    """The one definition of "a valid tenant scope", shared by every
+    scope-gated module (ScopedTable here, file_storage's ScopedFileStore).
+    Raises MissingTenantScope for None or a non-TenantScope value."""
     if scope is None:
         raise MissingTenantScope(
-            "no tenant scope supplied; every scoped query must name a tenant"
+            "no tenant scope supplied; every scoped operation must name a tenant"
         )
     if not isinstance(scope, TenantScope):
         raise MissingTenantScope(
@@ -101,7 +104,7 @@ class ScopedTable:
         "unknown". Because they are keyword-only they cannot be inserted as
         row columns — no `ledger_notes`-style table has such columns anyway.
         """
-        _require_scope(scope)
+        require_scope(scope)
         if "tenant_id" in fields:
             raise ValueError(
                 "do not pass tenant_id to insert(); it is taken from the scope. "
@@ -134,7 +137,7 @@ class ScopedTable:
 
     def all(self, scope: Any) -> list[dict]:
         """Return every row belonging to the scope's tenant, as dicts."""
-        _require_scope(scope)
+        require_scope(scope)
         cursor = self._conn.execute(
             f"SELECT * FROM {self._table} WHERE tenant_id = ?",
             (scope.tenant_id,),
@@ -143,7 +146,7 @@ class ScopedTable:
 
     def get(self, scope: Any, row_id: int) -> Optional[dict]:
         """Return one row by id, but only if it belongs to the scope's tenant."""
-        _require_scope(scope)
+        require_scope(scope)
         cursor = self._conn.execute(
             f"SELECT * FROM {self._table} WHERE id = ? AND tenant_id = ?",
             (row_id, scope.tenant_id),

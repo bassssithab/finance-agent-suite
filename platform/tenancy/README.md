@@ -52,6 +52,11 @@ What makes cross-tenant access hard to do by accident:
 This is the hand-rolled stand-in for what `docs/ARCHITECTURE.md` calls
 Postgres "row-level security" in a real deployment.
 
+`require_scope(scope)` is the shared, exported definition of "a valid tenant
+scope" — `ScopedTable` uses it, and so does `platform/file-storage`'s
+`ScopedFileStore`, so there is one rule and one exception type
+(`MissingTenantScope`) for "no scope" across the platform.
+
 ## Not in this prototype
 
 - audit-log wiring — the deliberate next step if this graduates
