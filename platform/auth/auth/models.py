@@ -15,7 +15,7 @@ if str(_approvals_dir) not in sys.path:
 
 from approvals import Role  # noqa: E402  (re-exported for convenience)
 
-__all__ = ["Role", "User", "Session"]
+__all__ = ["Role", "User", "Session", "MfaEnrollment"]
 
 
 @dataclass
@@ -45,3 +45,20 @@ class Session:
     username: str
     created_at: str   # ISO-8601 UTC
     expires_at: str   # ISO-8601 UTC
+
+
+@dataclass(frozen=True)
+class MfaEnrollment:
+    """The result of MfaService.enable(): everything needed to add the account
+    to a real authenticator app.
+
+    Unlike a password (hashed) or a session token (hashed), the TOTP `secret`
+    must be stored recoverable — verification needs the actual shared secret.
+    It is returned here once and never again from the API, and never written
+    to the audit log. `provisioning_uri` embeds the secret; treat it the same.
+    """
+
+    username: str
+    secret: str            # base32 — for manual entry
+    provisioning_uri: str  # otpauth://... — for a QR code
+    enabled_at: str        # ISO-8601 UTC

@@ -42,14 +42,57 @@ store.logout(token)
 `now=` is injectable on `create_user`, `login`, and `validate_token` purely
 so session expiry is testable without sleeping.
 
+## TOTP multi-factor auth
+
+Optional, opt-in per user. `auth.totp` is a hand-rolled RFC 6238
+implementation (SHA-1 / 6 digits / 30 s) — no dependency, and its
+interoperability is proven against the **RFC 6238 published test vectors**
+in `tests/test_totp.py`, so any real authenticator app (Google
+Authenticator, Authy, 1Password, …) accepts these secrets.
+
+```python
+from auth import AuthStore, MfaService, totp
+
+mfa = MfaService(store, audit_log=audit_log)   # audit_log REQUIRED
+
+enrollment = mfa.enable("ada.ledger")
+enrollment.secret            # base32 — for manual entry
+enrollment.provisioning_uri  # otpauth://… — render as a QR code
+
+mfa.verify("ada.ledger", "123456")   # -> True / False; MfaNotEnabled if off
+mfa.disable("ada.ledger")
+```
+
+Once enabled, **password alone no longer logs the user in** —
+`store.login(u, p)` returns `None` until called as
+`store.login(u, p, totp_code=…)` with a valid code, and
+`session.SessionService.authenticate(u, p, totp_code=…)` returns
+`AuthFailure.MFA_REQUIRED` / `MFA_INVALID` accordingly.
+
+- **Drift** — the current 30 s step ±1 is accepted (~±30 s of clock skew).
+- **Replay protection** — a code, once accepted, burns its time-step
+  (`mfa_enrollments.last_used_step`); reusing it (or an older still-in-window
+  code) returns `False` / `MFA_INVALID`, audited with reason `reused`. This
+  is shared atomically between `login()` and `MfaService.verify()`.
+- **Secret at rest** — TOTP verification needs the actual shared secret, so
+  unlike passwords and tokens it is stored **plaintext** in
+  `mfa_enrollments.secret`. In production: encrypt at rest (KMS / app-level).
+  The secret and the `otpauth://` URI are returned once from `enable()` and
+  **never written to the audit log**.
+- **Audited** — `MfaService` writes `auth.mfa.enabled` / `.disabled` /
+  `.verify_succeeded` / `.verify_failed` (with `reason`) to the injected
+  `AuditLogStore`; `SessionService` audits the login-time MFA outcome.
+  `AuthStore` itself stays storage-only — the audit lives in the composing
+  layers, as with the rest of it.
+
 ## Not in this prototype
 
-- direct audit-log writes from `AuthStore` — `platform/session` composes
-  this store into a flow that logs every login / validate / logout to the
-  shared `audit_log.AuditLogStore`; `AuthStore` on its own stays
-  storage-only
+- direct audit-log writes from `AuthStore` — `platform/session` (and
+  `auth.MfaService`) compose it into flows that log to the shared
+  `audit_log.AuditLogStore`; `AuthStore` on its own stays storage-only
 - password strength rules, rate limiting / lockout, token refresh,
-  expired-session cleanup, FastAPI routes
+  expired-session cleanup, MFA recovery codes, encrypted-at-rest TOTP
+  secrets, FastAPI routes
 
 ## Development
 

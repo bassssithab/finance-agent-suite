@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from auth import AuthStore, Role, UserExists
+from auth import AuthStore, Role, UserExists, totp
 
 from fixtures import FICTIONAL_USERS
 
@@ -116,3 +116,42 @@ def test_raw_token_is_not_stored_at_rest(store, tmp_path):
     assert session_rows
     for token_hash, _ in session_rows:
         assert token_hash != token  # only the sha256 is persisted
+
+
+# ---------------------------------------------------------------------------
+# MFA enforcement at login()
+# ---------------------------------------------------------------------------
+
+def _enable_mfa(store, username):
+    secret = totp.generate_secret()
+    store.set_mfa_secret(username, secret)
+    return secret
+
+
+def test_login_without_mfa_is_unchanged(store):
+    # No MFA enrolled -> password alone still issues a token (no regression).
+    assert store.mfa_enabled(GOOD_USER) is False
+    assert isinstance(store.login(GOOD_USER, GOOD_PASSWORD), str)
+
+
+def test_login_requires_a_totp_code_when_mfa_is_enabled(store):
+    secret = _enable_mfa(store, GOOD_USER)
+
+    assert store.login(GOOD_USER, GOOD_PASSWORD) is None                     # no code
+    assert store.login(GOOD_USER, GOOD_PASSWORD, totp_code="000000") is None  # wrong code
+
+    token = store.login(GOOD_USER, GOOD_PASSWORD, totp_code=totp.generate_code(secret))
+    assert isinstance(token, str)
+
+
+def test_login_rejects_a_reused_totp_code(store):
+    secret = _enable_mfa(store, GOOD_USER)
+    code = totp.generate_code(secret)
+
+    assert isinstance(store.login(GOOD_USER, GOOD_PASSWORD, totp_code=code), str)
+    assert store.login(GOOD_USER, GOOD_PASSWORD, totp_code=code) is None  # same code again
+
+
+def test_wrong_password_still_fails_even_with_a_valid_totp(store):
+    secret = _enable_mfa(store, GOOD_USER)
+    assert store.login(GOOD_USER, "wrong", totp_code=totp.generate_code(secret)) is None

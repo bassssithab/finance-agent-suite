@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from audit_log import AuditLogStore
-from auth import AuthStore
+from auth import AuthStore, MfaService, totp
 from tenancy import ScopedTable, TenantScope, TenancyStore
 from session import AuthenticatedSession, AuthFailure, SessionService
 
@@ -134,7 +134,7 @@ def test_valid_but_unassigned_user_is_handled_explicitly(svc, tmp_path):
     assert result is AuthFailure.NO_TENANT_ASSIGNED
     assert not isinstance(result, AuthenticatedSession)
 
-    # The just-issued login token was rolled back: no usable session left behind.
+    # The token is issued last, after the tenant check — so none was created.
     assert _session_row_count(tmp_path) == 0
 
 
@@ -243,7 +243,7 @@ def test_no_tenant_login_audits_once_and_logs_no_logout(svc, audit_log, tmp_path
 
     assert _actions(audit_log) == ["session.login.failed.no_tenant"]
     assert "session.logout" not in _actions(audit_log)
-    assert _session_row_count(tmp_path) == 0  # token still rolled back
+    assert _session_row_count(tmp_path) == 0  # no token issued (tenant check is before start_session)
 
 
 def test_validate_outcomes_are_audited(svc, audit_log):
@@ -288,3 +288,77 @@ def test_audit_chain_intact_across_a_full_flow(svc, notes, audit_log):
         "session.logout",
     ]
     assert audit_log.verify_chain().ok is True
+
+
+# ---------------------------------------------------------------------------
+# TOTP MFA in the login flow
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def mfa(auth_store, audit_log):
+    return MfaService(auth_store, audit_log=audit_log)
+
+
+def test_authenticate_without_mfa_is_unchanged(svc, mfa):
+    # farah has no MFA -> password alone still produces a full session.
+    assert mfa.is_enabled("farah.globex") is False
+    result = svc.authenticate("farah.globex", _password("farah.globex"))
+    assert isinstance(result, AuthenticatedSession)
+
+
+def test_authenticate_requires_totp_when_mfa_enabled(svc, mfa, audit_log):
+    secret = mfa.enable("dana.acme").secret
+
+    no_code = svc.authenticate("dana.acme", _password("dana.acme"))
+    assert no_code is AuthFailure.MFA_REQUIRED
+
+    ok = svc.authenticate(
+        "dana.acme", _password("dana.acme"), totp_code=totp.generate_code(secret)
+    )
+    assert isinstance(ok, AuthenticatedSession)
+    assert ok.tenant_id == "acme-books"
+
+    actions = _actions(audit_log)
+    assert "session.login.failed.mfa_required" in actions
+    succeeded = [e for e in audit_log.get_all() if e.action == "session.login.succeeded"][-1]
+    assert succeeded.output["mfa_used"] is True
+
+
+def test_authenticate_with_a_bad_totp_is_mfa_invalid(svc, mfa, audit_log):
+    mfa.enable("dana.acme")
+    result = svc.authenticate("dana.acme", _password("dana.acme"), totp_code="000000")
+
+    assert result is AuthFailure.MFA_INVALID
+    failed = [e for e in audit_log.get_all() if e.action == "session.login.failed.mfa_invalid"][-1]
+    assert failed.output["detail"] == "invalid"
+
+
+def test_authenticate_with_a_reused_totp_is_mfa_invalid(svc, mfa, audit_log):
+    secret = mfa.enable("dana.acme").secret
+    code = totp.generate_code(secret)
+
+    assert isinstance(
+        svc.authenticate("dana.acme", _password("dana.acme"), totp_code=code),
+        AuthenticatedSession,
+    )
+    replayed = svc.authenticate("dana.acme", _password("dana.acme"), totp_code=code)
+    assert replayed is AuthFailure.MFA_INVALID
+
+    failed = [e for e in audit_log.get_all() if e.action == "session.login.failed.mfa_invalid"][-1]
+    assert failed.output["detail"] == "reused"
+
+
+def test_wrong_password_is_bad_credentials_even_with_mfa_on(svc, mfa):
+    secret = mfa.enable("dana.acme").secret
+    result = svc.authenticate("dana.acme", "wrong", totp_code=totp.generate_code(secret))
+    assert result is AuthFailure.BAD_CREDENTIALS
+
+
+def test_a_totp_code_is_never_written_to_the_audit_log(svc, mfa, audit_log):
+    secret = mfa.enable("dana.acme").secret
+    code = totp.generate_code(secret)
+    svc.authenticate("dana.acme", _password("dana.acme"), totp_code=code)
+    svc.authenticate("dana.acme", _password("dana.acme"), totp_code="424242")
+
+    assert code not in _serialized_events(audit_log)
+    assert "424242" not in _serialized_events(audit_log)

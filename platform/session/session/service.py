@@ -10,15 +10,18 @@ This module owns no storage. It orchestrates three existing stores:
 The caller constructs and closes those stores; SessionService just holds
 references to them, so there is no close() here.
 
+authenticate() checks each factor itself — password (auth.verify_login),
+then TOTP MFA if enabled (auth.consume_totp), then tenant membership — and
+issues the token last, via auth.start_session. Nothing to roll back if a
+later step fails.
+
 Activity logging notes:
-- The password is NEVER written to the audit log, in any field.
+- The password is NEVER written to the audit log, in any field. Neither is
+  a TOTP code.
 - The raw session token is never written either — only a short fingerprint,
   `sha256(token)[:12]`, so events for one session can be correlated without
   the log carrying a replayable credential into an exported evidence pack.
-- Each authenticate / validate call emits exactly one event. The internal
-  token rollback on NO_TENANT_ASSIGNED calls auth_store.logout() directly,
-  so it does not also emit a session.logout event — the
-  session.login.failed.no_tenant event is the record.
+- Each authenticate / validate call emits exactly one event.
 """
 
 import hashlib
@@ -86,27 +89,26 @@ class SessionService:
         username: str,
         password: str,
         *,
+        totp_code: Optional[str] = None,
         ttl_seconds: Optional[int] = None,
         now: Optional[datetime] = None,
     ) -> Result:
-        """Verify credentials, then resolve the user's tenant.
+        """Verify each factor, then resolve the user's tenant, then issue a token.
 
         Returns an AuthenticatedSession on full success, or:
         - AuthFailure.BAD_CREDENTIALS      — wrong username or password
-        - AuthFailure.NO_TENANT_ASSIGNED   — login ok, but no tenant yet
-          (the issued token is rolled back in this case)
+        - AuthFailure.MFA_REQUIRED         — password ok, MFA on, no code given
+        - AuthFailure.MFA_INVALID          — password ok, code wrong / expired / replayed
+        - AuthFailure.NO_TENANT_ASSIGNED   — all factors ok, but no tenant yet
 
-        Emits one of session.login.succeeded / .failed.bad_credentials /
-        .failed.no_tenant. The password is never logged.
+        Each factor is checked here (not delegated to auth_store.login) so a
+        distinct reason is recorded for every failure. The token is issued
+        last — nothing to roll back if a later step fails. The password is
+        never logged; a TOTP code is never logged.
         """
         base_inputs = {"username": username, "ttl_seconds": ttl_seconds}
 
-        login_kwargs = {"now": now}
-        if ttl_seconds is not None:
-            login_kwargs["ttl_seconds"] = ttl_seconds
-        token = self.auth_store.login(username, password, **login_kwargs)
-
-        if token is None:
+        if not self.auth_store.verify_login(username, password):
             self._audit(
                 "session.login.failed.bad_credentials", username,
                 inputs=base_inputs,
@@ -114,28 +116,41 @@ class SessionService:
             )
             return AuthFailure.BAD_CREDENTIALS
 
-        user = self.auth_store.validate_token(token, now=now)
-        if user is None:
-            # Should not happen (token was just issued); treat defensively.
-            self._audit(
-                "session.login.failed.bad_credentials", username,
-                inputs=base_inputs,
-                output={"reason": AuthFailure.BAD_CREDENTIALS.value}, now=now,
-            )
-            return AuthFailure.BAD_CREDENTIALS
+        mfa_on = self.auth_store.mfa_enabled(username)
+        if mfa_on:
+            if not totp_code:
+                self._audit(
+                    "session.login.failed.mfa_required", username,
+                    inputs=base_inputs,
+                    output={"reason": AuthFailure.MFA_REQUIRED.value}, now=now,
+                )
+                return AuthFailure.MFA_REQUIRED
+            status = self.auth_store.consume_totp(username, totp_code, now=now)
+            if status != "ok":
+                self._audit(
+                    "session.login.failed.mfa_invalid", username,
+                    inputs=base_inputs,
+                    output={"reason": AuthFailure.MFA_INVALID.value, "detail": status},
+                    now=now,
+                )
+                return AuthFailure.MFA_INVALID
+
+        user = self.auth_store.get_user(username)  # password already verified
 
         try:
             scope = self.tenancy_store.scope_for_user(user)
         except NoMembership:
-            # Roll back the just-issued token: an unassigned user must not
-            # walk away with a usable session. Direct call — no logout event.
-            self.auth_store.logout(token)
             self._audit(
                 "session.login.failed.no_tenant", username,
                 inputs=base_inputs,
                 output={"reason": AuthFailure.NO_TENANT_ASSIGNED.value}, now=now,
             )
             return AuthFailure.NO_TENANT_ASSIGNED
+
+        session_kwargs = {"now": now}
+        if ttl_seconds is not None:
+            session_kwargs["ttl_seconds"] = ttl_seconds
+        token = self.auth_store.start_session(username, **session_kwargs)
 
         self._audit(
             "session.login.succeeded", user.username,
@@ -144,6 +159,7 @@ class SessionService:
                 "tenant_id": scope.tenant_id,
                 "role": user.role.value,
                 "token_fingerprint": _token_fingerprint(token),
+                "mfa_used": mfa_on,
             },
             now=now,
         )

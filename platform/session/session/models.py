@@ -50,11 +50,19 @@ class AuthFailure(str, Enum):
     """Wrong username or password. Deliberately does not say which — the
     auth layer's enumeration-safety is preserved."""
 
+    MFA_REQUIRED = "mfa_required"
+    """The password was correct, but the account has TOTP MFA enabled and no
+    code was supplied. Re-call authenticate() with `totp_code=`."""
+
+    MFA_INVALID = "mfa_invalid"
+    """The password was correct, but the supplied TOTP code was wrong,
+    outside the drift window, or a replay of one already used. (Which of
+    those is recorded in the audit trail, not exposed here.)"""
+
     NO_TENANT_ASSIGNED = "no_tenant_assigned"
-    """The login itself succeeded, but the user does not belong to any
-    tenant yet (a real, expected state for a freshly-created user). On
-    authenticate() the just-issued token is rolled back, so the user is
-    left with no usable session."""
+    """The password (and MFA, if any) checked out, but the user does not
+    belong to any tenant yet (a real, expected state for a freshly-created
+    user). No session token is issued."""
 
     INVALID_TOKEN = "invalid_token"
     """validate() only: the token is unknown, malformed, expired, or has

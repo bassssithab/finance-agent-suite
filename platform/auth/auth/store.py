@@ -23,6 +23,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional, Union
 
+from . import totp
 from .models import Role, Session, User
 from .passwords import DUMMY_HASH, hash_password, verify_password
 
@@ -42,6 +43,13 @@ CREATE TABLE IF NOT EXISTS sessions (
     username TEXT NOT NULL REFERENCES users(username),
     created_at TEXT NOT NULL,
     expires_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS mfa_enrollments (
+    username TEXT PRIMARY KEY REFERENCES users(username),
+    secret TEXT NOT NULL,          -- base32; recoverable by necessity (TOTP)
+    enabled_at TEXT NOT NULL,
+    last_used_step INTEGER          -- the last time-step burned; NULL until first use
 );
 """
 
@@ -130,17 +138,42 @@ class AuthStore:
         username: str,
         password: str,
         *,
+        totp_code: Optional[str] = None,
         ttl_seconds: int = DEFAULT_TTL_SECONDS,
         now: Optional[datetime] = None,
     ) -> Optional[str]:
-        """Verify credentials and, on success, issue a session token.
+        """Verify credentials (and MFA, if enabled) and, on success, issue a
+        session token.
 
-        Returns the raw token string, or None on any authentication
-        failure (the caller cannot tell why it failed).
+        Returns the raw token string, or None on any authentication failure —
+        wrong password, or (for an MFA account) a missing / invalid / reused
+        TOTP code. The caller cannot tell which from the return value;
+        SessionService.authenticate distinguishes them for its audit trail.
         """
         if not self.verify_login(username, password):
             return None
 
+        if self.mfa_enabled(username):
+            if totp_code is None:
+                return None
+            if self.consume_totp(username, totp_code, now=now) != "ok":
+                return None
+
+        return self.start_session(username, ttl_seconds=ttl_seconds, now=now)
+
+    def start_session(
+        self,
+        username: str,
+        *,
+        ttl_seconds: int = DEFAULT_TTL_SECONDS,
+        now: Optional[datetime] = None,
+    ) -> str:
+        """Issue a session token for an ALREADY-authenticated user.
+
+        No password or MFA check — the caller is responsible for having done
+        both. SessionService uses this after verifying each factor itself so
+        it can report a distinct reason for every failure.
+        """
         issued = now or _utcnow()
         expires = issued + timedelta(seconds=ttl_seconds)
         token = _new_token()
@@ -151,6 +184,75 @@ class AuthStore:
         )
         self._conn.commit()
         return token
+
+    # -- MFA (TOTP) --------------------------------------------------
+    #
+    # Storage + the one atomic verify-and-burn. The audited lifecycle
+    # (enable / disable / standalone verify) lives in auth.mfa.MfaService;
+    # this store stays audit-free, like the rest of it.
+
+    def set_mfa_secret(
+        self, username: str, secret: str, *, now: Optional[datetime] = None
+    ) -> None:
+        self._conn.execute(
+            "INSERT INTO mfa_enrollments (username, secret, enabled_at, last_used_step) "
+            "VALUES (?, ?, ?, NULL)",
+            (username, secret, (now or _utcnow()).isoformat()),
+        )
+        self._conn.commit()
+
+    def get_mfa_secret(self, username: str) -> Optional[str]:
+        row = self._conn.execute(
+            "SELECT secret FROM mfa_enrollments WHERE username = ?", (username,)
+        ).fetchone()
+        return row[0] if row is not None else None
+
+    def clear_mfa_secret(self, username: str) -> None:
+        self._conn.execute(
+            "DELETE FROM mfa_enrollments WHERE username = ?", (username,)
+        )
+        self._conn.commit()
+
+    def mfa_enabled(self, username: str) -> bool:
+        return self.get_mfa_secret(username) is not None
+
+    def consume_totp(
+        self, username: str, code: str, *, now: Optional[datetime] = None
+    ) -> str:
+        """Verify a TOTP code and, on success, BURN its time-step so it can
+        never be replayed. Returns one of:
+
+        - "ok"           valid, and not seen before — step recorded
+        - "invalid"      no time-step in the drift window matches
+        - "reused"       the matched step was already spent (replay, or an
+                         older still-in-window code after a newer one)
+        - "not_enrolled" the user has no MFA secret
+
+        Shared by login() and MfaService.verify() so a code spent through one
+        path cannot be replayed through the other.
+        """
+        secret = self.get_mfa_secret(username)
+        if secret is None:
+            return "not_enrolled"
+
+        ts = (now or _utcnow()).timestamp()
+        step = totp.matching_step(secret, code, timestamp=ts)
+        if step is None:
+            return "invalid"
+
+        row = self._conn.execute(
+            "SELECT last_used_step FROM mfa_enrollments WHERE username = ?", (username,)
+        ).fetchone()
+        last_used = row[0] if row is not None else None
+        if last_used is not None and step <= last_used:
+            return "reused"
+
+        self._conn.execute(
+            "UPDATE mfa_enrollments SET last_used_step = ? WHERE username = ?",
+            (step, username),
+        )
+        self._conn.commit()
+        return "ok"
 
     # -- sessions ----------------------------------------------------
 

@@ -5,19 +5,20 @@
 > as `platform/auth` and `platform/tenancy`.
 
 Combines authentication and tenancy into one usable flow. It owns no
-storage — it orchestrates an existing `auth.AuthStore` and
-`tenancy.TenancyStore`.
+storage — it orchestrates an existing `auth.AuthStore`,
+`tenancy.TenancyStore`, and `audit_log.AuditLogStore`.
 
 ## The one-call flow
 
 ```python
+from audit_log import AuditLogStore
 from auth import AuthStore
 from tenancy import TenancyStore
 from session import SessionService, AuthenticatedSession, AuthFailure
 
-svc = SessionService(AuthStore("auth.db"), TenancyStore("tenancy.db"))
+svc = SessionService(AuthStore("auth.db"), TenancyStore("tenancy.db"), AuditLogStore("audit.db"))
 
-result = svc.authenticate("dana.acme", password)
+result = svc.authenticate("dana.acme", password)          # + totp_code=… if MFA is on
 match result:
     case AuthenticatedSession() as s:
         s.token       # hold this for later requests
@@ -26,8 +27,12 @@ match result:
         s.tenant_id   # == s.scope.tenant_id
     case AuthFailure.BAD_CREDENTIALS:
         ...  # wrong username or password (not told which)
+    case AuthFailure.MFA_REQUIRED:
+        ...  # password ok, account has TOTP MFA — re-call with totp_code=…
+    case AuthFailure.MFA_INVALID:
+        ...  # code was wrong, expired, or a replay of one already used
     case AuthFailure.NO_TENANT_ASSIGNED:
-        ...  # login ok, but user isn't in an org yet — send them to org setup
+        ...  # all factors ok, but user isn't in an org yet
 ```
 
 On a later request, re-derive the same bundle from the token alone:
@@ -43,23 +48,26 @@ result = svc.validate(token)   # AuthenticatedSession | AuthFailure.INVALID_TOKE
 |---|---|---|
 | success | `AuthenticatedSession` | `AuthenticatedSession` |
 | wrong username / password | `AuthFailure.BAD_CREDENTIALS` | — |
+| password ok, MFA on, no code | `AuthFailure.MFA_REQUIRED` | — |
+| password ok, code wrong / expired / replayed | `AuthFailure.MFA_INVALID` | — |
 | unknown / malformed / expired / logged-out token | — | `AuthFailure.INVALID_TOKEN` |
-| valid identity, no tenant membership | `AuthFailure.NO_TENANT_ASSIGNED` (token rolled back) | `AuthFailure.NO_TENANT_ASSIGNED` (token left intact) |
+| valid identity, no tenant membership | `AuthFailure.NO_TENANT_ASSIGNED` | `AuthFailure.NO_TENANT_ASSIGNED` |
 
 Every non-success is a distinct, self-describing `AuthFailure` value —
 never a bare `None`, never a session with a missing scope.
 
-**The no-tenant case is first-class.** A freshly-created user who hasn't
-been assigned to an org is a real, expected state. `authenticate` returns
-`NO_TENANT_ASSIGNED` *and* rolls back the login token it just issued, so an
-unassigned user is never left holding a usable session. `validate` returns
-the same value but leaves the token intact — the token is genuinely valid,
-it's the tenancy that's missing (e.g. the user was assigned to an org only
-after the token was issued).
+`authenticate` checks each factor itself — password, then TOTP MFA if the
+account has it, then tenant membership — and issues the session token
+**last**. So a `NO_TENANT_ASSIGNED` (or any earlier failure) leaves no token
+behind; there is nothing to roll back. `validate` re-derives the bundle
+from a live token and returns `NO_TENANT_ASSIGNED` only if the user lost
+their tenant membership after the token was issued.
+
+Every `authenticate` / `validate` / `logout` writes one event to the
+injected `AuditLogStore`; the password and any TOTP code are never logged.
 
 ## Not in this prototype
 
-- audit-log wiring — the deliberate next step if this graduates
 - token refresh, "switch tenant", multi-tenant users, revocation lists,
   FastAPI middleware that turns a request header into an
   `AuthenticatedSession`
@@ -75,5 +83,5 @@ python3 -m venv .venv
 cd platform/session && ../../.venv/bin/pytest -v
 ```
 
-No install step is needed. `conftest.py` puts `session/`, `../auth`, and
-`../tenancy` on `sys.path` for the test run.
+No install step is needed. `conftest.py` puts `session/`, `../auth`,
+`../tenancy`, and `../audit-log` on `sys.path` for the test run.
