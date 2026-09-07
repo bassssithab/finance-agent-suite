@@ -15,7 +15,7 @@ if str(_approvals_dir) not in sys.path:
 
 from approvals import Role  # noqa: E402  (re-exported for convenience)
 
-__all__ = ["Role", "User", "Session", "MfaEnrollment"]
+__all__ = ["Role", "User", "Session", "MfaEnrollment", "ResetDelivery"]
 
 
 @dataclass
@@ -62,3 +62,23 @@ class MfaEnrollment:
     secret: str            # base32 — for manual entry
     provisioning_uri: str  # otpauth://... — for a QR code
     enabled_at: str        # ISO-8601 UTC
+
+
+@dataclass(frozen=True)
+class ResetDelivery:
+    """What request_reset() hands back.
+
+    In production this method returns NOTHING — a background job emails the
+    link to the account's verified address. The prototype returns the token
+    directly so local dev and tests can finish the flow; `delivery_note`
+    spells that out. Returned identically (same shape, real token) whether or
+    not the username exists, so the request endpoint cannot be used to
+    enumerate accounts.
+    """
+
+    username: str
+    reset_token: str       # raw — treat as a credential; never persisted, never logged
+    reset_link: str
+    requested_at: str      # ISO-8601 UTC
+    expires_at: str        # ISO-8601 UTC
+    delivery_note: str

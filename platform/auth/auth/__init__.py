@@ -8,6 +8,7 @@ imported by app.py or any agent yet. It provides:
 - enumeration-safe login verification
 - random session tokens whose raw value is never stored at rest
 - optional TOTP multi-factor auth (auth.totp + auth.mfa.MfaService)
+- enumeration-safe password reset (auth.reset.PasswordResetService)
 
 Roles are reused from platform/approvals so the whole chassis has one
 Role source of truth. `../approvals` and `../audit-log` are put on sys.path
@@ -33,8 +34,9 @@ from .mfa import (  # noqa: E402
     MfaService,
     UnknownUser,
 )
-from .models import MfaEnrollment, Session, User  # noqa: E402
+from .models import MfaEnrollment, ResetDelivery, Session, User  # noqa: E402
 from .passwords import hash_password, verify_password  # noqa: E402
+from .reset import PasswordResetService  # noqa: E402
 from .store import AuthStore, UserExists  # noqa: E402
 
 __all__ = [
@@ -42,6 +44,7 @@ __all__ = [
     "Session",
     "User",
     "MfaEnrollment",
+    "ResetDelivery",
     "hash_password",
     "verify_password",
     "AuthStore",
@@ -52,4 +55,5 @@ __all__ = [
     "UnknownUser",
     "MfaAlreadyEnabled",
     "MfaNotEnabled",
+    "PasswordResetService",
 ]

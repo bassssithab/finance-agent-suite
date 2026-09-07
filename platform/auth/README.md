@@ -85,14 +85,63 @@ Once enabled, **password alone no longer logs the user in** —
   `AuthStore` itself stays storage-only — the audit lives in the composing
   layers, as with the rest of it.
 
+## Password reset
+
+`auth.PasswordResetService(store, audit_log=…)` — audited facade, same split
+as `MfaService` (`AuthStore` holds the `password_reset_tokens` table and
+`create_reset_token` / `consume_reset_token`; the audit lives here).
+
+```python
+from auth import PasswordResetService
+
+reset = PasswordResetService(store, audit_log=audit_log)
+
+delivery = reset.request_reset("ada.ledger")   # -> ResetDelivery
+delivery.reset_token   # raw, single-use, expiring (default 15 min)
+delivery.reset_link
+delivery.delivery_note # the blunt "never return this in an API response" warning
+
+reset.redeem_reset(delivery.reset_token, "a-new-password")   # -> True / False
+```
+
+- **Enumeration-safe** — `request_reset` does the *same work* and returns
+  the *same shape* (a real token in a `ResetDelivery`) whether or not the
+  username exists. There is no existence branch and no PBKDF2-scale work on
+  the request path, so this endpoint cannot be used to discover which
+  usernames exist — the defence is constant work, not just a generic reply.
+  A token minted for a nonexistent user simply can never be redeemed, and
+  every redeem failure (`invalid` / `used` / `expired` / user-gone) is the
+  same generic `False`.
+- **Same token strength as everything else** — `secrets.token_urlsafe(32)`,
+  stored only as its sha256, raw token returned once and never logged
+  (events carry a `sha256[:12]` fingerprint).
+- **Single-use** — redeeming burns the token (`consumed_at`); a second
+  attempt is `False` / reason `used`.
+- **Revokes every session** — a redeem calls
+  `AuthStore.revoke_all_sessions_for_user`, so a reset (a strong "the old
+  sessions may be compromised" signal) logs the user out everywhere. MFA
+  enrollment is left intact.
+- **Delivery** — `request_reset` returns the token/link directly. In
+  production it returns *nothing*; a background job emails the link to the
+  account's verified address. The direct return is the prototype's stand-in
+  for that email — and, as `delivery_note` says, itself the thing you must
+  never ship.
+- **Audited** — `auth.password_reset.requested` (with an internal
+  `user_exists` field), `.redeemed` (with `sessions_invalidated`),
+  `.redeem_failed` (with `reason`). Never the raw token, never either
+  password. `AuthStore.last_reset_requested_at(username)` is a durable hook
+  for future rate-limiting.
+
 ## Not in this prototype
 
-- direct audit-log writes from `AuthStore` — `platform/session` (and
-  `auth.MfaService`) compose it into flows that log to the shared
-  `audit_log.AuditLogStore`; `AuthStore` on its own stays storage-only
+- direct audit-log writes from `AuthStore` — `platform/session`,
+  `auth.MfaService`, and `auth.PasswordResetService` compose it into flows
+  that log to the shared `audit_log.AuditLogStore`; `AuthStore` on its own
+  stays storage-only
 - password strength rules, rate limiting / lockout, token refresh,
-  expired-session cleanup, MFA recovery codes, encrypted-at-rest TOTP
-  secrets, FastAPI routes
+  expired-session / expired-reset-token cleanup, MFA recovery codes,
+  encrypted-at-rest TOTP secrets, a real email delivery channel, FastAPI
+  routes
 
 ## Development
 
