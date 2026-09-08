@@ -159,19 +159,6 @@ def get_infra() -> _Infra:
 # --------------------------------------------------------------------------
 # views
 # --------------------------------------------------------------------------
-def _render_test_logins() -> None:
-    with st.expander("Fictional test logins"):
-        st.markdown(
-            "All invented — from `platform/session/tests/fixtures.py`.\n\n"
-            "| username | password | tenant |\n"
-            "|---|---|---|\n"
-            "| `dana.acme` | `acme-pw-placeholder` | acme-books |\n"
-            "| `farah.globex` | `globex-pw-placeholder` | globex-finance |\n"
-            "| `newbie.unassigned` | `newbie-pw-placeholder` | _none — valid login, "
-            "no organization yet_ |\n"
-        )
-
-
 def render_login(infra: _Infra) -> None:
     st.subheader("Log in")
 
@@ -207,8 +194,6 @@ def render_login(infra: _Infra) -> None:
                 "rolled back the session token it had briefly issued — there is "
                 "nothing to persist, and no scope-less session was created."
             )
-
-    _render_test_logins()
 
 
 def render_logged_in(infra: _Infra, session: AuthenticatedSession) -> None:

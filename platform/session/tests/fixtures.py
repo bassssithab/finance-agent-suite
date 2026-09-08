@@ -15,10 +15,20 @@ FICTIONAL_TENANTS = [
 ]
 
 # username -> (password, role, tenant_id or None)
+#
+# Developer reference. This is the same login list infra_login_demo.py used to
+# render in a "Fictional test logins" UI expander — that was removed because a
+# table of usernames + passwords sitting on a login screen reads, at a glance,
+# like a real credential leak, however clearly it is labelled. It lives only
+# here now, for local dev:
+#
+#     dana.acme          Notreal0000   ->  acme-books
+#     farah.globex       Notreal1111   ->  globex-finance
+#     newbie.unassigned  Notreal2222   ->  (no tenant: "logged in, no org yet")
 FICTIONAL_USERS = {
-    "dana.acme": ("acme-pw-placeholder", Role.APPROVER, "acme-books"),
-    "farah.globex": ("globex-pw-placeholder", Role.REVIEWER, "globex-finance"),
-    "newbie.unassigned": ("newbie-pw-placeholder", Role.PREPARER, None),
+    "dana.acme": ("Notreal0000", Role.APPROVER, "acme-books"),
+    "farah.globex": ("Notreal1111", Role.REVIEWER, "globex-finance"),
+    "newbie.unassigned": ("Notreal2222", Role.PREPARER, None),
 }
 
 # A demo table for showing the returned TenantScope is ready to use.
