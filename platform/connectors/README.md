@@ -66,6 +66,39 @@ within `folder`; ids containing path separators or `..` are rejected. Like
 records the `sha256` and identity of the document it acted on in its own
 `AuditEvent`.
 
+## `content_blocks`
+
+Turns a `SourceDocument`'s bytes into the Claude Messages API content block
+for it — the one place that knows images use an `image` block and PDFs use a
+`document` block, so agents don't each reimplement that switch.
+
+```python
+from connectors import FileDocumentConnector, build_content_block
+
+docs = FileDocumentConnector(source_system="sample_co", folder="./sample_data/invoices")
+doc = docs.fetch_document("contract_0417.pdf")
+
+block = build_content_block(doc.content, doc.media_type)
+# {"type": "document", "source": {"type": "base64",
+#  "media_type": "application/pdf", "data": "..."}}
+
+messages = [{"role": "user", "content": [block, {"type": "text", "text": "Summarize this."}]}]
+```
+
+Supported types: PNG, JPEG, GIF, WebP (`image` blocks), PDF (`document`
+block). Anything else raises `UnsupportedMediaTypeError` — checked before
+size, so an oversized file of an unsupported type gets that error rather than
+a size error.
+
+Each type has its own size cap, checked against the raw bytes before base64
+encoding: `DEFAULT_MAX_IMAGE_BYTES` (5 MiB) and `DEFAULT_MAX_PDF_BYTES`
+(10 MiB), both overridable via the `max_image_bytes` / `max_pdf_bytes`
+keyword arguments. These are deliberately tighter than Anthropic's own
+per-request ceilings (10 MB per base64-encoded image, 32 MB request / 600
+pages per PDF, per the current API docs) — comfortable headroom for base64's
+~33% size inflation and the rest of the request. Oversize content raises
+`ContentTooLargeError`; nothing is encoded or sent.
+
 ## `FileBudgetActualConnector`
 
 Read-only stand-in for a real budget / actuals feed (a planning tool or ERP

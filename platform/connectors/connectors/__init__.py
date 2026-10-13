@@ -1,5 +1,11 @@
 from .base import Connector, ConnectorParseError
 from .budget_connector import BudgetActualConnector, FileBudgetActualConnector
+from .content_blocks import (
+    DEFAULT_MAX_IMAGE_BYTES,
+    DEFAULT_MAX_PDF_BYTES,
+    ContentTooLargeError,
+    build_content_block,
+)
 from .document_connector import (
     DocumentConnector,
     FileDocumentConnector,
@@ -26,7 +32,11 @@ __all__ = [
     "BudgetActualLine",
     "Connector",
     "ConnectorParseError",
+    "ContentTooLargeError",
+    "DEFAULT_MAX_IMAGE_BYTES",
+    "DEFAULT_MAX_PDF_BYTES",
     "DocumentConnector",
+    "build_content_block",
     "FileBudgetActualConnector",
     "FileDocumentConnector",
     "FileConnector",
