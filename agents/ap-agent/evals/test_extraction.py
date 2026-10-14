@@ -10,6 +10,7 @@ from fakes import invoice_client, no_tool_call_client, refusal_client
 from fixtures import record_invoice_payload
 
 IMAGE_BYTES = b"\x89PNG\r\n\x1a\n-pretend-this-is-an-invoice"
+PDF_BYTES = b"%PDF-1.4\n-pretend-this-is-a-contract"
 
 
 def _run(payload=None, client=None, **kwargs):
@@ -113,3 +114,69 @@ def test_prompt_hash_depends_on_image_content():
 
     assert r1.prompt_hash == r2.prompt_hash
     assert r1.prompt_hash != r3.prompt_hash
+
+
+def test_prompt_hash_is_pinned_for_a_fixed_image():
+    # Regression pin computed by the pre-PDF-support code (same SYSTEM_PROMPT,
+    # USER_TEXT, and _prompt_hash hashing scheme, untouched by this change).
+    # If this fails, one of those changed — update the hash deliberately, not
+    # as a side effect of an unrelated edit, since real runs' audit-log
+    # prompt_hash values depend on this staying stable.
+    content = b"\x89PNG\r\n\x1a\n-pinned-hash-regression-fixture"
+    client = invoice_client(record_invoice_payload("clean_office_supplies"))
+
+    result = extract_invoice(client, content=content, media_type="image/png")
+
+    assert result.prompt_hash == (
+        "ac0441e1c42ac4b0a9a393c8ad6b5f25670d9168c6310198e3cd7d5723fd8051"
+    )
+
+
+def test_sends_pdf_as_a_document_block():
+    client = invoice_client(record_invoice_payload("clean_office_supplies"))
+
+    result = extract_invoice(client, content=PDF_BYTES, media_type="application/pdf")
+
+    assert result.ok is True
+    request = client.messages.last_request
+    doc_block = request["messages"][0]["content"][0]
+    assert doc_block["type"] == "document"
+    assert doc_block["source"]["type"] == "base64"
+    assert doc_block["source"]["media_type"] == "application/pdf"
+    assert base64.standard_b64decode(doc_block["source"]["data"]) == PDF_BYTES
+
+
+def test_oversize_image_fails_before_any_client_call():
+    client = invoice_client(record_invoice_payload("clean_office_supplies"))
+    oversize = b"x" * (5 * 1024 * 1024 + 1)  # default image cap is 5 MiB
+
+    result = extract_invoice(client, content=oversize, media_type="image/png")
+
+    assert result.ok is False
+    assert result.input_error == "content_too_large"
+    assert result.parse_error.startswith("content_too_large:")
+    assert client.messages.calls == []
+    assert result.prompt_hash  # still computed for the audit trail
+
+
+def test_oversize_pdf_fails_before_any_client_call():
+    client = invoice_client(record_invoice_payload("clean_office_supplies"))
+    oversize = b"x" * (10 * 1024 * 1024 + 1)  # default PDF cap is 10 MiB
+
+    result = extract_invoice(client, content=oversize, media_type="application/pdf")
+
+    assert result.ok is False
+    assert result.input_error == "content_too_large"
+    assert result.parse_error.startswith("content_too_large:")
+    assert client.messages.calls == []
+
+
+def test_unsupported_media_type_fails_before_any_client_call():
+    client = invoice_client(record_invoice_payload("clean_office_supplies"))
+
+    result = extract_invoice(client, content=b"hello", media_type="text/plain")
+
+    assert result.ok is False
+    assert result.input_error == "unsupported_media_type"
+    assert result.parse_error.startswith("unsupported_media_type:")
+    assert client.messages.calls == []

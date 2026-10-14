@@ -181,6 +181,40 @@ def test_extraction_refusal_logs_and_submits_nothing(
     assert audit_log.verify_chain().ok is True
 
 
+def test_oversized_document_fails_extraction_without_submitting(
+    knowledge_base, audit_log, approval_queue, tmp_path
+):
+    folder = tmp_path / "invoices"
+    folder.mkdir()
+    oversize_bytes = b"x" * (5 * 1024 * 1024 + 1)  # over the default image cap
+    (folder / "oversize.png").write_bytes(oversize_bytes)
+    connector = FileDocumentConnector(source_system="sample_co", folder=folder)
+    client = invoice_client(record_invoice_payload("clean_office_supplies"))
+
+    run = process_invoice(
+        document_id="oversize.png",
+        document_connector=connector,
+        knowledge_base=knowledge_base,
+        audit_log=audit_log,
+        approval_queue=approval_queue,
+        client=client,
+        now=fixed_now,
+    )
+
+    assert run.draft is None
+    assert run.approval_request is None
+    assert run.extraction.input_error == "content_too_large"
+    assert client.messages.calls == []  # rejected before any API call
+    assert approval_queue.list_pending() == []
+
+    actions = [e.action for e in audit_log.get_all()]
+    assert actions == ["invoice_document_received", "invoice_extraction_failed"]
+
+    failed = audit_log.get_all()[1]
+    assert failed.output["input_error"] == "content_too_large"
+    assert audit_log.verify_chain().ok is True
+
+
 def test_no_chart_of_accounts_knowledge_skips_coding_but_still_submits(
     document_connector, empty_knowledge_base, audit_log, approval_queue
 ):

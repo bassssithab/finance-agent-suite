@@ -19,10 +19,11 @@ while this agent is new and still being tuned (see the README), not a claim
 that Sonnet is the right long-term tier for invoice OCR.
 """
 
-import base64
 import hashlib
 from dataclasses import dataclass
 from typing import Optional
+
+from connectors import ContentTooLargeError, UnsupportedMediaTypeError, build_content_block
 
 from .models import ExtractedInvoice, InvoiceLineItem
 from .money import parse_decimal
@@ -98,21 +99,11 @@ class ExtractionResult:
     refused: bool = False
     refusal_category: Optional[str] = None
     parse_error: Optional[str] = None
+    input_error: Optional[str] = None  # "content_too_large" / "unsupported_media_type"
 
     @property
     def ok(self) -> bool:
         return self.invoice is not None
-
-
-def build_image_block(content: bytes, media_type: str) -> dict:
-    return {
-        "type": "image",
-        "source": {
-            "type": "base64",
-            "media_type": media_type,
-            "data": base64.standard_b64encode(content).decode("ascii"),
-        },
-    }
 
 
 def _prompt_hash(media_type: str, content: bytes) -> str:
@@ -165,8 +156,24 @@ def extract_invoice(
     effort: str = DEFAULT_EFFORT,
 ) -> ExtractionResult:
     prompt_hash = _prompt_hash(media_type, content)
+
+    try:
+        content_block = build_content_block(content, media_type)
+    except ContentTooLargeError as exc:
+        return ExtractionResult(
+            invoice=None, model=model, prompt_hash=prompt_hash,
+            parse_error=f"content_too_large: {exc}",
+            input_error="content_too_large",
+        )
+    except UnsupportedMediaTypeError as exc:
+        return ExtractionResult(
+            invoice=None, model=model, prompt_hash=prompt_hash,
+            parse_error=f"unsupported_media_type: {exc}",
+            input_error="unsupported_media_type",
+        )
+
     user_content = [
-        build_image_block(content, media_type),
+        content_block,
         {"type": "text", "text": USER_TEXT},
     ]
 
