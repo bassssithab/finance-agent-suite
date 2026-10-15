@@ -120,6 +120,7 @@ def check_receipt_policy_compliance(
                 "refused": extraction_result.refused,
                 "refusal_category": extraction_result.refusal_category,
                 "parse_error": extraction_result.parse_error,
+                "input_error": extraction_result.input_error,
             },
             model=model,
             prompt_hash=extraction_result.prompt_hash,

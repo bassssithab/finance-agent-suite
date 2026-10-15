@@ -208,6 +208,42 @@ def test_extraction_refusal_logs_and_submits_nothing(
     assert audit_log.verify_chain().ok is True
 
 
+def test_oversized_document_fails_extraction_without_submitting(
+    knowledge_base, audit_log, approval_queue, tmp_path
+):
+    folder = tmp_path / "receipts"
+    folder.mkdir()
+    oversize_bytes = b"x" * (5 * 1024 * 1024 + 1)  # over the default image cap
+    (folder / "oversize.png").write_bytes(oversize_bytes)
+    connector = FileDocumentConnector(source_system="sample_co", folder=folder)
+    client = receipt_client(record_receipt_payload("compliant_taxi"))
+
+    run = check_receipt_policy_compliance(
+        document_id="oversize.png",
+        document_connector=connector,
+        knowledge_base=knowledge_base,
+        audit_log=audit_log,
+        approval_queue=approval_queue,
+        policy=SAMPLE_POLICY,
+        as_of_date=AS_OF,
+        client=client,
+        now=fixed_now,
+    )
+
+    assert run.draft is None
+    assert run.approval_request is None
+    assert run.extraction.input_error == "content_too_large"
+    assert client.messages.calls == []  # rejected before any API call
+    assert approval_queue.list_pending() == []
+
+    actions = [e.action for e in audit_log.get_all()]
+    assert actions == ["receipt_document_received", "receipt_extraction_failed"]
+
+    failed = audit_log.get_all()[1]
+    assert failed.output["input_error"] == "content_too_large"
+    assert audit_log.verify_chain().ok is True
+
+
 def test_violations_but_no_relevant_knowledge_skips_explanation_and_still_submits(
     empty_knowledge_base, audit_log, approval_queue
 ):

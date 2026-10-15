@@ -6,6 +6,7 @@ from fakes import no_tool_call_client, receipt_client, refusal_client
 from fixtures import record_receipt_payload
 
 IMAGE_BYTES = b"\x89PNG\r\n\x1a\n-pretend-this-is-a-receipt"
+PDF_BYTES = b"%PDF-1.4\n-pretend-this-is-a-receipt"
 
 
 def _run(payload=None, client=None, **kwargs):
@@ -96,3 +97,69 @@ def test_prompt_hash_depends_on_image_content():
     r3 = extract_receipt(c2, content=b"image-two", media_type="image/png")
     assert r1.prompt_hash == r2.prompt_hash
     assert r1.prompt_hash != r3.prompt_hash
+
+
+def test_prompt_hash_is_pinned_for_a_fixed_image():
+    # Regression pin computed by the pre-PDF-support code (same SYSTEM_PROMPT,
+    # USER_TEXT, and _prompt_hash hashing scheme, untouched by this change).
+    # If this fails, one of those changed — update the hash deliberately, not
+    # as a side effect of an unrelated edit, since real runs' audit-log
+    # prompt_hash values depend on this staying stable.
+    content = b"\x89PNG\r\n\x1a\n-pinned-hash-regression-fixture"
+    client = receipt_client(record_receipt_payload("compliant_taxi"))
+
+    result = extract_receipt(client, content=content, media_type="image/png")
+
+    assert result.prompt_hash == (
+        "2b1c429346b6e4abd0b52d457bef5715464cf74678f22fa904629a57b557ec23"
+    )
+
+
+def test_sends_pdf_as_a_document_block():
+    client = receipt_client(record_receipt_payload("compliant_taxi"))
+
+    result = extract_receipt(client, content=PDF_BYTES, media_type="application/pdf")
+
+    assert result.ok is True
+    request = client.messages.last_request
+    doc_block = request["messages"][0]["content"][0]
+    assert doc_block["type"] == "document"
+    assert doc_block["source"]["type"] == "base64"
+    assert doc_block["source"]["media_type"] == "application/pdf"
+    assert base64.standard_b64decode(doc_block["source"]["data"]) == PDF_BYTES
+
+
+def test_oversize_image_fails_before_any_client_call():
+    client = receipt_client(record_receipt_payload("compliant_taxi"))
+    oversize = b"x" * (5 * 1024 * 1024 + 1)  # default image cap is 5 MiB
+
+    result = extract_receipt(client, content=oversize, media_type="image/png")
+
+    assert result.ok is False
+    assert result.input_error == "content_too_large"
+    assert result.parse_error.startswith("content_too_large:")
+    assert client.messages.calls == []
+    assert result.prompt_hash  # still computed for the audit trail
+
+
+def test_oversize_pdf_fails_before_any_client_call():
+    client = receipt_client(record_receipt_payload("compliant_taxi"))
+    oversize = b"x" * (10 * 1024 * 1024 + 1)  # default PDF cap is 10 MiB
+
+    result = extract_receipt(client, content=oversize, media_type="application/pdf")
+
+    assert result.ok is False
+    assert result.input_error == "content_too_large"
+    assert result.parse_error.startswith("content_too_large:")
+    assert client.messages.calls == []
+
+
+def test_unsupported_media_type_fails_before_any_client_call():
+    client = receipt_client(record_receipt_payload("compliant_taxi"))
+
+    result = extract_receipt(client, content=b"hello", media_type="text/plain")
+
+    assert result.ok is False
+    assert result.input_error == "unsupported_media_type"
+    assert result.parse_error.startswith("unsupported_media_type:")
+    assert client.messages.calls == []
