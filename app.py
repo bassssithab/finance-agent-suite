@@ -612,14 +612,14 @@ def render_ap_invoice() -> None:
 
     source = st.radio(
         "Invoice",
-        ["Use a committed sample invoice", "Upload an invoice image"],
+        ["Use a committed sample invoice", "Upload an invoice file"],
         horizontal=True,
     )
 
     document_bytes = None
     document_id = None
-    if source == "Upload an invoice image":
-        upload = st.file_uploader("Invoice image", type=["png", "jpg", "jpeg"])
+    if source == "Upload an invoice file":
+        upload = st.file_uploader("Invoice (image or PDF)", type=["png", "jpg", "jpeg", "pdf"])
         if upload is not None:
             document_bytes = upload.getvalue()
             document_id = "upload" + Path(upload.name).suffix.lower()
@@ -635,8 +635,8 @@ def render_ap_invoice() -> None:
     if not st.button("Process invoice", type="primary", disabled=not api_key):
         return
 
-    if source == "Upload an invoice image" and document_bytes is None:
-        st.error("Upload a PNG or JPEG invoice image first.")
+    if source == "Upload an invoice file" and document_bytes is None:
+        st.error("Upload a PNG, JPEG, or PDF invoice first.")
         return
 
     import anthropic
@@ -647,7 +647,7 @@ def render_ap_invoice() -> None:
     client = anthropic.Anthropic(api_key=api_key)
 
     with tempfile.TemporaryDirectory() as tmp:
-        if source == "Upload an invoice image":
+        if source == "Upload an invoice file":
             folder = Path(tmp)
             (folder / document_id).write_bytes(document_bytes)
         else:
@@ -1474,14 +1474,14 @@ def render_expense() -> None:
 
     source = st.radio(
         "Receipt",
-        ["Use a committed sample receipt", "Upload a receipt image"],
+        ["Use a committed sample receipt", "Upload a receipt file"],
         horizontal=True,
     )
 
     document_bytes = None
     document_id = None
-    if source == "Upload a receipt image":
-        upload = st.file_uploader("Receipt image", type=["png", "jpg", "jpeg"])
+    if source == "Upload a receipt file":
+        upload = st.file_uploader("Receipt (image or PDF)", type=["png", "jpg", "jpeg", "pdf"])
         if upload is not None:
             document_bytes = upload.getvalue()
             document_id = "upload" + Path(upload.name).suffix.lower()
@@ -1498,8 +1498,8 @@ def render_expense() -> None:
     if not st.button("Check receipt", type="primary", disabled=not api_key):
         return
 
-    if source == "Upload a receipt image" and document_bytes is None:
-        st.error("Upload a PNG or JPEG receipt image first.")
+    if source == "Upload a receipt file" and document_bytes is None:
+        st.error("Upload a PNG, JPEG, or PDF receipt first.")
         return
 
     import anthropic
@@ -1510,7 +1510,7 @@ def render_expense() -> None:
     client = anthropic.Anthropic(api_key=api_key)
 
     with tempfile.TemporaryDirectory() as tmp:
-        if source == "Upload a receipt image":
+        if source == "Upload a receipt file":
             folder = Path(tmp)
             (folder / document_id).write_bytes(document_bytes)
         else:
