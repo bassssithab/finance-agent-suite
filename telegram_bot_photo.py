@@ -22,12 +22,12 @@ No ANTHROPIC_API_KEY -> the bot handles that before calling in here; any API
 failure here is caught and turned into a friendly message, never a crash.
 """
 
-import base64
 import importlib.util
 import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
 import anthropic
 
@@ -49,7 +49,15 @@ from ap_agent import process_invoice  # noqa: E402
 from ap_agent.extraction import DEFAULT_MODEL as _MODEL  # noqa: E402  (shared with expense-agent)
 from approvals import ApprovalQueue  # noqa: E402
 from audit_log import AuditEvent, AuditLogStore  # noqa: E402
-from connectors import ConnectorParseError, FileDocumentConnector  # noqa: E402
+from connectors import (  # noqa: E402
+    DEFAULT_MAX_IMAGE_BYTES,
+    DEFAULT_MAX_PDF_BYTES,
+    ConnectorParseError,
+    ContentTooLargeError,
+    FileDocumentConnector,
+    UnsupportedMediaTypeError,
+    build_content_block,
+)
 from expense_agent import check_receipt_policy_compliance  # noqa: E402
 from knowledge import KnowledgeBase  # noqa: E402
 
@@ -57,6 +65,19 @@ _EXPENSE_KEYWORDS = ("expense", "receipt")
 _INVOICE_KEYWORDS = ("invoice", "purchase", "bill")
 
 _NOT_FINAL = "Not final until a human approves. (No ERP write.)"
+
+# A Telegram *document* message (as opposed to a compressed photo) carries its
+# own mime_type/file_name, so unlike photos (always re-compressed to JPEG by
+# Telegram) a document could be a PDF, or a PNG/JPEG sent "as a file" instead
+# of as a photo. This is the same set connectors.build_content_block supports
+# — kept as its own map here (extension, not media type, is what a filename
+# written to disk needs) rather than re-deriving it from connectors' private
+# extension table.
+_SUPPORTED_DOCUMENT_MEDIA_TYPES = {
+    "application/pdf": ".pdf",
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+}
 
 
 # --------------------------------------------------------------------------
@@ -116,16 +137,17 @@ _KIND_TO_ROUTE = {
 }
 
 
-def classify_photo(client, jpeg_bytes) -> str:
-    """-> "expense" | "invoice" | "unclear". Raises anthropic.AnthropicError on API failure."""
-    image_block = {
-        "type": "image",
-        "source": {
-            "type": "base64",
-            "media_type": "image/jpeg",
-            "data": base64.standard_b64encode(jpeg_bytes).decode("ascii"),
-        },
-    }
+def _classify(client, content_bytes, media_type) -> str:
+    """-> "expense" | "invoice" | "unclear".
+
+    Shared by classify_photo (always image/jpeg) and classify_document (any
+    media type build_content_block supports). Raises anthropic.AnthropicError
+    on API failure, or ContentTooLargeError / UnsupportedMediaTypeError if
+    content_bytes/media_type turn out not to fit (defense in depth — a
+    document's caller should have already checked this via reject_document
+    before ever downloading).
+    """
+    content_block = build_content_block(content_bytes, media_type)
     response = client.messages.create(
         model=_MODEL,
         max_tokens=256,
@@ -135,7 +157,7 @@ def classify_photo(client, jpeg_bytes) -> str:
         tool_choice={"type": "tool", "name": "classify_document"},
         messages=[{
             "role": "user",
-            "content": [image_block, {"type": "text", "text": "Classify this document."}],
+            "content": [content_block, {"type": "text", "text": "Classify this document."}],
         }],
     )
     if response.stop_reason == "refusal":
@@ -146,6 +168,17 @@ def classify_photo(client, jpeg_bytes) -> str:
     if tool_use is None:
         return "unclear"
     return _KIND_TO_ROUTE.get(tool_use.input.get("kind"), "unclear")
+
+
+def classify_photo(client, jpeg_bytes) -> str:
+    """-> "expense" | "invoice" | "unclear". Raises anthropic.AnthropicError on API failure."""
+    return _classify(client, jpeg_bytes, "image/jpeg")
+
+
+def classify_document(client, content_bytes, media_type) -> str:
+    """-> "expense" | "invoice" | "unclear". Same as classify_photo, for any
+    media type build_content_block supports (PDF included)."""
+    return _classify(client, content_bytes, media_type)
 
 
 # --------------------------------------------------------------------------
@@ -180,17 +213,22 @@ def _fresh_stores():
     return audit_log, approval_queue
 
 
-def run_expense(client, jpeg_bytes, username):
+def _run_agent(agent_fn, kb_name, content_bytes, filename, client, username):
+    """Shared by run_expense/run_invoice (always telegram_photo.jpg) and
+    run_expense_document/run_invoice_document (filename extension matches the
+    document's real media type): fresh stores + a temp folder +
+    FileDocumentConnector + the agent call + store cleanup — app.py's
+    new_stores()/FileDocumentConnector pattern, run once per Telegram upload."""
     audit_log, approval_queue = _fresh_stores()
-    kb = _knowledge_base("expense-agent")
+    kb = _knowledge_base(kb_name)
     with tempfile.TemporaryDirectory() as tmp:
-        (Path(tmp) / "telegram_photo.jpg").write_bytes(jpeg_bytes)
+        (Path(tmp) / filename).write_bytes(content_bytes)
         connector = FileDocumentConnector(
             source_system="telegram_bot_prototype", folder=tmp
         )
         try:
-            return check_receipt_policy_compliance(
-                document_id="telegram_photo.jpg",
+            return agent_fn(
+                document_id=filename,
                 document_connector=connector,
                 knowledge_base=kb,
                 audit_log=audit_log,
@@ -201,29 +239,36 @@ def run_expense(client, jpeg_bytes, username):
         finally:
             audit_log.close()
             approval_queue.close()
+
+
+def run_expense(client, jpeg_bytes, username):
+    return _run_agent(
+        check_receipt_policy_compliance, "expense-agent",
+        jpeg_bytes, "telegram_photo.jpg", client, username,
+    )
 
 
 def run_invoice(client, jpeg_bytes, username):
-    audit_log, approval_queue = _fresh_stores()
-    kb = _knowledge_base("ap-agent")
-    with tempfile.TemporaryDirectory() as tmp:
-        (Path(tmp) / "telegram_photo.jpg").write_bytes(jpeg_bytes)
-        connector = FileDocumentConnector(
-            source_system="telegram_bot_prototype", folder=tmp
-        )
-        try:
-            return process_invoice(
-                document_id="telegram_photo.jpg",
-                document_connector=connector,
-                knowledge_base=kb,
-                audit_log=audit_log,
-                approval_queue=approval_queue,
-                client=client,
-                preparer=username,
-            )
-        finally:
-            audit_log.close()
-            approval_queue.close()
+    return _run_agent(
+        process_invoice, "ap-agent",
+        jpeg_bytes, "telegram_photo.jpg", client, username,
+    )
+
+
+def run_expense_document(client, content_bytes, media_type, username):
+    filename = "telegram_document" + _SUPPORTED_DOCUMENT_MEDIA_TYPES[media_type]
+    return _run_agent(
+        check_receipt_policy_compliance, "expense-agent",
+        content_bytes, filename, client, username,
+    )
+
+
+def run_invoice_document(client, content_bytes, media_type, username):
+    filename = "telegram_document" + _SUPPORTED_DOCUMENT_MEDIA_TYPES[media_type]
+    return _run_agent(
+        process_invoice, "ap-agent",
+        content_bytes, filename, client, username,
+    )
 
 
 # --------------------------------------------------------------------------
@@ -282,7 +327,12 @@ def summarize_invoice(run, username: str) -> str:
     )
 
 
-def _record_photo_routed(persistent_audit_log, run, *, doc_type, routing, username, chat_id):
+def _record_photo_routed(
+    persistent_audit_log, run, *, doc_type, routing, username, chat_id, media_type
+):
+    # Action name stays "telegram_bot.photo_routed" even for a document
+    # upload — the audit trail is one continuous stream of "an upload got
+    # routed to an agent" events, and media_type is what tells them apart.
     agent = "expense-agent" if doc_type == "expense" else "ap-agent"
     approval_request = getattr(run, "approval_request", None)
     persistent_audit_log.append(AuditEvent(
@@ -294,8 +344,57 @@ def _record_photo_routed(persistent_audit_log, run, *, doc_type, routing, userna
         output={
             "draft_ok": run.draft is not None,
             "approval_request_id": getattr(approval_request, "id", None),
+            "media_type": media_type,
         },
     ))
+
+
+def reject_document(
+    persistent_audit_log, *, media_type: Optional[str], file_size: Optional[int],
+    username: str, chat_id: int,
+) -> Optional[str]:
+    """Pre-download gate for a Telegram *document* message — decides purely
+    from Telegram's own declared mime_type/file_size metadata, no bytes
+    touched. Returns a friendly reply if the upload should be rejected (and
+    records why on the persistent audit log); returns None if it's fine to
+    download and hand to process_document.
+
+    Caps mirror connectors.build_content_block's own per-type defaults
+    exactly, so an upload that passes this gate also passes the agent's
+    content-block build later — this check only exists to skip a pointless
+    download, not to second-guess that cap.
+    """
+    if media_type not in _SUPPORTED_DOCUMENT_MEDIA_TYPES:
+        reason = "unsupported_media_type"
+        reply = (
+            "I can only read PDF, PNG, or JPEG files here. That upload "
+            f"({media_type or 'unknown type'}) isn't supported — resend it as "
+            "one of those, or as a photo."
+        )
+    else:
+        cap = (
+            DEFAULT_MAX_PDF_BYTES if media_type == "application/pdf"
+            else DEFAULT_MAX_IMAGE_BYTES
+        )
+        if file_size is not None and file_size > cap:
+            reason = "content_too_large"
+            reply = (
+                f"That file is too large ({file_size / (1024 * 1024):.1f} MiB) — "
+                f"the limit for a {media_type} upload is {cap // (1024 * 1024)} "
+                "MiB. Try a smaller file."
+            )
+        else:
+            return None
+
+    persistent_audit_log.append(AuditEvent(
+        timestamp=datetime.now(timezone.utc).isoformat(),
+        agent="telegram_bot_prototype",
+        action="telegram_bot.document_rejected",
+        actor=username,
+        inputs={"chat_id": chat_id, "media_type": media_type, "file_size": file_size},
+        output={"reason": reason},
+    ))
+    return reply
 
 
 # --------------------------------------------------------------------------
@@ -335,6 +434,53 @@ def process_photo(*, client, jpeg_bytes, caption, username, chat_id, persistent_
     _record_photo_routed(
         persistent_audit_log, run,
         doc_type=doc_type, routing=routing, username=username, chat_id=chat_id,
+        media_type="image/jpeg",
+    )
+    summarize = summarize_expense if doc_type == "expense" else summarize_invoice
+    return summarize(run, username)
+
+
+def process_document(
+    *, client, content_bytes, media_type, caption, username, chat_id, persistent_audit_log
+) -> str:
+    """Route → (classify) → run agent → record → summarize, for a Telegram
+    *document* upload. Same contract and shape as process_photo, generalized
+    to any media type build_content_block supports (PDF included).
+
+    Caller must have already: linked the chat (same as for photos — see
+    telegram_bot_prototype.py's on_document), and called reject_document(...)
+    before downloading. Never raises for an expected failure — always
+    returns a message.
+    """
+    doc_type = route_by_caption(caption)
+    routing = "caption"
+
+    if doc_type is None:
+        try:
+            doc_type = classify_document(client, content_bytes, media_type)
+        except (anthropic.AnthropicError, ContentTooLargeError, UnsupportedMediaTypeError) as exc:
+            return (
+                f"The document service failed ({exc}). Your file wasn't "
+                "submitted — please try again shortly."
+            )
+        routing = "vision"
+        if doc_type == "unclear":
+            return (
+                "I couldn't tell whether that's an expense receipt or a "
+                "purchase/supplier invoice. Please resend with a caption "
+                "saying which — e.g. `expense receipt` or `supplier invoice`."
+            )
+
+    runner = run_expense_document if doc_type == "expense" else run_invoice_document
+    try:
+        run = runner(client, content_bytes, media_type, username)
+    except (anthropic.AnthropicError, ConnectorParseError, ValueError) as exc:
+        return f"I couldn't process that file ({exc}). Nothing was submitted."
+
+    _record_photo_routed(
+        persistent_audit_log, run,
+        doc_type=doc_type, routing=routing, username=username, chat_id=chat_id,
+        media_type=media_type,
     )
     summarize = summarize_expense if doc_type == "expense" else summarize_invoice
     return summarize(run, username)

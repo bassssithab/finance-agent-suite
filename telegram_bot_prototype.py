@@ -43,6 +43,7 @@ import argparse
 import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parent
 PLATFORM = ROOT / "platform"
@@ -205,29 +206,17 @@ def _console_log(chat_id: int, kind: str, reply: str) -> None:
     print(f"  chat={chat_id} {kind:<10} -> {reply.splitlines()[0]}")
 
 
-def cmd_run() -> int:
-    token = os.environ.get(_TOKEN_ENV)
-    if not token:
-        print(
-            f"error: {_TOKEN_ENV} is not set.\n"
-            f"  export {_TOKEN_ENV}=...  (from @BotFather), or add a line\n"
-            f"  {_TOKEN_ENV}=...  to ./.env",
-            file=sys.stderr,
-        )
-        return 1
-
+def _build_handlers(stores: Stores, photo) -> SimpleNamespace:
+    """Construct the bot's async handlers, bound to `stores` and the
+    telegram_bot_photo module. Split out of cmd_run() so on_document (and the
+    rest) can be unit tested directly — calling one of these needs an
+    update/context shaped like python-telegram-bot's, but no real
+    Application, bot token, or network connection. See
+    test_telegram_bot_photo.py.
+    """
     from telegram import Update
-    from telegram.ext import (
-        Application,
-        CommandHandler,
-        ContextTypes,
-        MessageHandler,
-        filters,
-    )
-
-    import telegram_bot_photo as photo  # heavy (agents + anthropic) — load only when running
-
-    stores = Stores()
+    from telegram.ext import ContextTypes
+    from telegram.error import TelegramError
 
     async def on_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         chat_id = update.effective_chat.id
@@ -293,19 +282,97 @@ def cmd_run() -> int:
     async def on_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         chat_id = update.effective_chat.id
         user = stores.links.resolve_chat_id(chat_id)
-        who = f"Hi {user.username}, " if user is not None else ""
-        reply = (
-            f"{who}send that as a *photo* rather than a file and I'll try to "
-            "read it. (Attachment/document handling isn't built yet.)"
+        if user is None:
+            _console_log(chat_id, "document", "not linked -> instructions")
+            await update.message.reply_text(_INSTRUCTIONS)
+            return
+
+        doc = update.message.document
+        media_type = doc.mime_type
+        file_size = doc.file_size
+
+        key = anthropic_key()
+        if not key:
+            reply = (
+                f"📄 Got your file, {user.username}. I can't read documents "
+                f"yet — {_ANTHROPIC_KEY_ENV} isn't configured. Your file "
+                "wasn't lost; resend once it's set up."
+            )
+            _console_log(chat_id, "document", "no api key")
+            await update.message.reply_text(reply)
+            return
+
+        # Checked against Telegram's own declared mime_type/file_size, before
+        # we ever call get_file() — no point downloading something we're
+        # just going to reject.
+        rejection = photo.reject_document(
+            stores.audit_log, media_type=media_type, file_size=file_size,
+            username=user.username, chat_id=chat_id,
+        )
+        if rejection is not None:
+            _console_log(chat_id, "document", rejection)
+            await update.message.reply_text(rejection)
+            return
+
+        await update.message.reply_text(f"📄 Got it, {user.username} — reading the file…")
+        tg_file = await context.bot.get_file(doc.file_id)
+        try:
+            content_bytes = bytes(await tg_file.download_as_bytearray())
+        except TelegramError as exc:
+            # Telegram's own download limit is ~20 MB; our size check above
+            # only catches what Telegram *declared* — this covers a bad
+            # download (oversized or otherwise) cleanly instead of crashing.
+            reply = (
+                f"I couldn't download that file ({exc}). It may be too large "
+                "for Telegram to hand over (its own limit is about 20 MB) or "
+                "the download failed — nothing was submitted. Please try again."
+            )
+            _console_log(chat_id, "document", reply)
+            await update.message.reply_text(reply)
+            return
+
+        import anthropic
+
+        reply = photo.process_document(
+            client=anthropic.Anthropic(api_key=key),
+            content_bytes=content_bytes,
+            media_type=media_type,
+            caption=update.message.caption,
+            username=user.username,
+            chat_id=chat_id,
+            persistent_audit_log=stores.audit_log,
         )
         _console_log(chat_id, "document", reply)
         await update.message.reply_text(reply)
 
+    return SimpleNamespace(
+        on_start=on_start, on_text=on_text, on_photo=on_photo, on_document=on_document,
+    )
+
+
+def cmd_run() -> int:
+    token = os.environ.get(_TOKEN_ENV)
+    if not token:
+        print(
+            f"error: {_TOKEN_ENV} is not set.\n"
+            f"  export {_TOKEN_ENV}=...  (from @BotFather), or add a line\n"
+            f"  {_TOKEN_ENV}=...  to ./.env",
+            file=sys.stderr,
+        )
+        return 1
+
+    from telegram.ext import Application, CommandHandler, MessageHandler, filters
+
+    import telegram_bot_photo as photo  # heavy (agents + anthropic) — load only when running
+
+    stores = Stores()
+    handlers = _build_handlers(stores, photo)
+
     app = Application.builder().token(token).build()
-    app.add_handler(CommandHandler("start", on_start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
-    app.add_handler(MessageHandler(filters.PHOTO, on_photo))
-    app.add_handler(MessageHandler(filters.Document.ALL, on_document))
+    app.add_handler(CommandHandler("start", handlers.on_start))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.on_text))
+    app.add_handler(MessageHandler(filters.PHOTO, handlers.on_photo))
+    app.add_handler(MessageHandler(filters.Document.ALL, handlers.on_document))
 
     print(f"telegram_bot_prototype: polling. state in {DATA_DIR}/  (Ctrl-C to stop)",
           flush=True)
